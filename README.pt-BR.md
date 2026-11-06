@@ -6,7 +6,7 @@ Painel grátis, estilo aaPanel, para transformar um PC ou notebook velho num ser
 Tem sites, bancos de dados, arquivos, terminal no navegador, App Store, bot do WhatsApp e acesso de qualquer lugar.
 Também traz o comando `lk`, um menu completo no terminal.
 
-**Site:** SEU-SITE-AQUI · **Versão:** 2.2.3 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+**Site:** SEU-SITE-AQUI · **Versão:** 2.3.0 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
 > A interface do painel é em português.
 
@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/ratinhogauchonoob-arch/lkpanel/main
 2. No final aparecem o endereço (`http://IP-DO-SERVIDOR:8088`), o usuário **`root`** e uma **senha temporária**.
 3. No 1º login, o painel pede uma senha nova. Ela pode valer também para o root do Linux, com o SSH do root ligado.
 
-Depois disso, o menu no terminal é o `sudo lk`.
+Depois disso, o menu no terminal é o `sudo lk`. Para deixar o servidor num IP fixo (ex.: `192.168.0.200`): `sudo lk ip-fixo on`.
 
 ### Atualizar
 Rode o `install.sh` novo. Ele detecta o painel instalado e só atualiza, mantendo porta, senha, sites, bancos e dados.
@@ -53,7 +53,7 @@ sudo bash install.sh uninstall                                  # comando lk
 | **App Store** | 22 apps com um clique: Docker, Portainer, Jellyfin, Ollama, Open WebUI, PostgreSQL, Redis, Node + PM2, Tailscale, Cloudflare Tunnel, Fail2ban, WhatsApp + Bot e outros |
 | **Internet** | Cloudflare Tunnel, teste rápido (trycloudflare), troca de senha, 2FA, histórico de acessos |
 | **Segurança** | Login com usuário e senha, 2FA (TOTP), bloqueio de IP depois de 5 senhas erradas, avisos no WhatsApp e no Telegram |
-| **`lk`** | Menu com 37 opções: LAMP, sites, SSL, bancos, firewall, bloqueio de IP, PM2, Supervisor, SSH, modo servidor, bot |
+| **`lk`** | Menu com 38 opções: LAMP, sites, SSL, bancos, firewall, bloqueio de IP, PM2, Supervisor, SSH, modo servidor, bot |
 
 ---
 
@@ -85,6 +85,7 @@ cp dist/install-lk.sh install.sh # para publicar a versão nova
 
 | Versão | O que mudou |
 |---|---|
+| **2.3.0** | IP fixo na rede de casa: `lk ip-fixo on` (ou `sudo lk` › 38) deixa o servidor sempre no mesmo IP, começando no .200 e pulando os que já estão em uso |
 | **2.2.3** | `lk sites` e a opção 36 mostram quando a pasta de um site sumiu; ligar um site assim avisa que vai dar 404 |
 | **2.2.2** | Sites atrás do Tailscale Funnel / Cloudflare Tunnel abrem com CSS e JS (sem "Mixed Content"): o Apache avisa o PHP que a conexão é https (`lk proxy-https`) |
 | **2.2.1** | Apache e Tailscale Funnel juntos na porta 443 sem derrubar o painel (`lk apache-443`) |

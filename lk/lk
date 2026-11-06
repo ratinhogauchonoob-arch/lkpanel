@@ -5,7 +5,7 @@
 #        lk help     -> comandos diretos
 # =====================================================================
 
-LK_VERSION="2.2.3"
+LK_VERSION="2.3.0"
 LKM_INSTALLER="/usr/local/share/lk/install-lk-monitor.sh"
 LKM_SITE="/etc/apache2/sites-available/lkmonitor.conf"
 LK_DIR="/etc/lk"
@@ -1415,6 +1415,130 @@ apache_443_off() {
   apache2ctl configtest >/dev/null 2>&1 && systemctl restart apache2 && ok "Apache voltou a escutar a 443 em todos os IPs (Listen 443)"
 }
 
+# --------------------------------------------------------------------- IP fixo na rede de casa
+# Deixa o servidor sempre no mesmo IP (ex.: 192.168.0.200). Se o IP escolhido já estiver em uso por outro
+# aparelho, tenta o próximo (201, 202...). Usa o NetworkManager (Ubuntu com tela) ou o netplan (Ubuntu Server).
+IPFIX_CONF="$LK_DIR/ip-fixo.conf"
+IPFIX_NETPLAN=/etc/netplan/90-lk-ip-fixo.yaml
+ipfix_iface() { ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}'; }
+ipfix_gw()    { ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}'; }
+ipfix_cur()   { ip -o -4 addr show dev "$1" scope global 2>/dev/null | awk '{print $4; exit}'; }   # 192.168.0.57/24
+ipfix_nm()    { has nmcli && systemctl is-active --quiet NetworkManager && [[ $(nmcli -t -g GENERAL.STATE device show "$1" 2>/dev/null) == 100* ]]; }
+ipfix_valid() { local a b c d; IFS=. read -r a b c d <<< "$1"; for x in "$a" "$b" "$c" "$d"; do [[ $x =~ ^[0-9]{1,3}$ ]] && ((x <= 255)) || return 1; done; }
+# 0 = outro aparelho responde neste IP (ocupado)
+ipfix_in_use() {
+  local ip=$1 dev=$2
+  if has arping && arping -V 2>&1 | grep -qi iputils; then
+    arping -D -q -c 2 -w 3 -I "$dev" "$ip" >/dev/null 2>&1 && return 1 || return 0
+  fi
+  ping -c 1 -W 1 "$ip" >/dev/null 2>&1 && return 0
+  ip neigh show "$ip" 2>/dev/null | grep -q lladdr && return 0
+  return 1
+}
+ipfix_status() {
+  local dev cur; dev=$(ipfix_iface); cur=$(ipfix_cur "$dev")
+  [[ -n $dev ]] || { err "Sem rede: não achei a rota padrão (o servidor está conectado?)"; return 1; }
+  info "Placa: $dev · IP agora: ${cur:-?} · roteador: $(ipfix_gw)"
+  if [[ -f $IPFIX_CONF ]]; then ok "IP fixo LIGADO pelo LK: $(grep -m1 '^IP=' "$IPFIX_CONF" | cut -d= -f2) (desfazer: lk ip-fixo off)"
+  else warn "IP fixo pelo LK: desligado (o roteador escolhe o IP por DHCP)"; fi
+}
+ipfix_on() {
+  local want=${1:-} dev gw cur mine pfx base start last ip n con
+  dev=$(ipfix_iface); gw=$(ipfix_gw)
+  [[ -n $dev && -n $gw ]] || { err "Sem rede: não achei a placa e o roteador (rota padrão)"; return 1; }
+  [[ $dev == tailscale* || $dev == docker* || $dev == br-* ]] && { err "A rota padrão está em $dev; conecte o servidor na rede de casa"; return 1; }
+  cur=$(ipfix_cur "$dev"); mine=${cur%/*}; pfx=${cur#*/}
+  [[ -n $mine && $pfx =~ ^[0-9]+$ ]] || { err "Não achei o IP atual de $dev"; return 1; }
+  ((pfx >= 16 && pfx <= 30)) || { err "Rede /$pfx não suportada (use uma rede de casa comum, /24)"; return 1; }
+  base=${mine%.*}
+  if [[ -n $want ]]; then
+    ipfix_valid "$want" || { err "IP inválido: $want"; return 1; }
+    [[ ${want%.*} == "$base" ]] || { err "$want não é da rede de casa ($base.x)"; return 1; }
+    start=${want##*.}
+  else start=200; fi
+  ((start >= 2 && start <= 254)) || { err "Use um final entre 2 e 254"; return 1; }
+  has arping || apt_i iputils-arping >/dev/null 2>&1
+  ip=""; last=$((start + 30)); ((last > 254)) && last=254
+  for ((n = start; n <= last; n++)); do
+    local c="$base.$n"
+    [[ $c == "$gw" ]] && continue
+    if [[ $c == "$mine" ]]; then ip=$c; break; fi
+    if ipfix_in_use "$c" "$dev"; then warn "$c já é usado por outro aparelho, tentando o próximo..."; continue; fi
+    ip=$c; break
+  done
+  [[ -n $ip ]] || { err "Não achei IP livre entre $base.$start e $base.$last"; return 1; }
+  info "Placa $dev · roteador $gw · IP escolhido: ${G}$ip/$pfx${N}$([[ $ip == "$mine" ]] && echo " (é o IP atual)")"
+  if [[ -z ${LK_YES:-} ]]; then
+    warn "Se você está conectado por SSH, a conexão cai e você entra de novo com: ssh root@$ip"
+    confirm "Deixar o servidor fixo em $ip?" || return 1
+  fi
+  mkdir -p "$LK_DIR"
+  if ipfix_nm "$dev"; then
+    con=$(nmcli -t -g GENERAL.CONNECTION device show "$dev" 2>/dev/null)
+    [[ -n $con ]] || { err "NetworkManager: não achei a conexão de $dev"; return 1; }
+    [[ -f $IPFIX_CONF ]] || printf 'MODE=nm\nCON=%s\nOLD_METHOD=%s\n' "$con" "$(nmcli -t -g ipv4.method con show "$con")" > "$IPFIX_CONF"
+    nmcli con mod "$con" ipv4.method manual ipv4.addresses "$ip/$pfx" ipv4.gateway "$gw" ipv4.dns "$gw 1.1.1.1" ipv4.ignore-auto-dns yes \
+      || { err "NetworkManager recusou a configuração"; return 1; }
+    sed -i '/^IP=/d' "$IPFIX_CONF"; echo "IP=$ip" >> "$IPFIX_CONF"
+    systemd-run --quiet --collect --on-active=3 /bin/bash -c "nmcli con up '$con' >/dev/null 2>&1; sleep 4; [ -x $A443_BIN ] && systemctl restart apache2" >/dev/null 2>&1 \
+      || nmcli con up "$con" >/dev/null 2>&1
+  else
+    has netplan || { err "Nem NetworkManager nem netplan: configure o IP fixo no roteador (reserva de DHCP)"; return 1; }
+    [[ -d /sys/class/net/$dev/wireless ]] && { err "Wi-Fi sem NetworkManager: reserve o IP no roteador (DHCP)"; return 1; }
+    [[ -f $IPFIX_CONF ]] || printf 'MODE=netplan\nDEV=%s\n' "$dev" > "$IPFIX_CONF"
+    cat > "$IPFIX_NETPLAN" <<LK_IPFIX_EOF
+# LK: IP fixo na rede de casa (desfazer: lk ip-fixo off)
+network:
+  version: 2
+  ethernets:
+    $dev:
+      dhcp4: false
+      addresses: [$ip/$pfx]
+      routes:
+        - to: default
+          via: $gw
+      nameservers:
+        addresses: [$gw, 1.1.1.1]
+LK_IPFIX_EOF
+    chmod 600 "$IPFIX_NETPLAN"
+    netplan generate >/dev/null 2>&1 || { rm -f "$IPFIX_NETPLAN"; err "O netplan recusou a configuração (desfeito)"; return 1; }
+    sed -i '/^IP=/d' "$IPFIX_CONF"; echo "IP=$ip" >> "$IPFIX_CONF"
+    systemd-run --quiet --collect --on-active=3 /bin/bash -c "netplan apply; sleep 4; [ -x $A443_BIN ] && systemctl restart apache2" >/dev/null 2>&1 || netplan apply
+  fi
+  log "IP fixo: $ip/$pfx em $dev (gw $gw)"
+  ok "Servidor fixo em ${G}$ip${N} (aplicando em 3 segundos)"
+  info "Painel: http://$ip:8088 · SSH: ssh root@$ip"
+  warn "Para o roteador não dar esse IP a outro aparelho: reserve $ip para este servidor no roteador (DHCP / reserva de IP), ou use um final alto (200 a 250)."
+}
+ipfix_off() {
+  [[ -f $IPFIX_CONF ]] || { info "O IP fixo não foi ligado pelo LK"; return 0; }
+  local MODE CON OLD_METHOD
+  MODE=$(grep -m1 '^MODE=' "$IPFIX_CONF" | cut -d= -f2-); CON=$(grep -m1 '^CON=' "$IPFIX_CONF" | cut -d= -f2-); OLD_METHOD=$(grep -m1 '^OLD_METHOD=' "$IPFIX_CONF" | cut -d= -f2-)
+  [[ -z ${LK_YES:-} ]] && { warn "O roteador vai dar um IP novo (DHCP) e a conexão SSH pode cair."; confirm "Voltar para o IP automático?" || return 1; }
+  if [[ $MODE == nm ]]; then
+    nmcli con mod "$CON" ipv4.method "${OLD_METHOD:-auto}" ipv4.addresses "" ipv4.gateway "" ipv4.dns "" ipv4.ignore-auto-dns no
+    systemd-run --quiet --collect --on-active=3 /bin/bash -c "nmcli con up '$CON' >/dev/null 2>&1; sleep 6; [ -x $A443_BIN ] && systemctl restart apache2" >/dev/null 2>&1 || nmcli con up "$CON"
+  else
+    rm -f "$IPFIX_NETPLAN"
+    systemd-run --quiet --collect --on-active=3 /bin/bash -c "netplan apply; sleep 6; [ -x $A443_BIN ] && systemctl restart apache2" >/dev/null 2>&1 || netplan apply
+  fi
+  rm -f "$IPFIX_CONF"; log "IP fixo desligado"
+  ok "IP automático (DHCP) de volta. Veja o IP novo com: hostname -I"
+}
+ipfix_menu() {
+  title "IP fixo na rede de casa"
+  ipfix_status || return 1
+  echo
+  echo "  (1) Fixar no .200 (ou o próximo livre)   (2) Escolher o IP"
+  echo "  (3) Voltar para o IP automático (DHCP)   (0) Voltar"
+  case "$(ask "Opção" 0)" in
+    1) ipfix_on;;
+    2) ipfix_on "$(ask "IP (ex.: $(ipfix_cur "$(ipfix_iface)" | cut -d/ -f1 | sed 's/\.[0-9]*$//').200)")";;
+    3) ipfix_off;;
+    *) return 0;;
+  esac
+}
+
 # --------------------------------------------------------------------- Bot do WhatsApp (Guardião LK)
 # LK-BOT-PATCH: já vem no lk desde a 2.2.0 (o lk-bot-patch.sh antigo pula esta parte)
 WA_INSTALLER="/usr/local/share/lk/install-whatsapp.sh"
@@ -1500,6 +1624,7 @@ MENU_R=(
   "(32) Atualizar sistema / limpar disco"
   "(34) SSH: ativar / root / porta"
   "(36) Ligar / desligar site"
+  "(38) IP fixo na rede de casa"
 )
 
 show_menu() {
@@ -1547,7 +1672,7 @@ main_menu() {
       25) site_list;;        26) ssl_menu;;        27) db_create;;        28) db_drop;;
       29) fix_perms;;        30) server_info;;     31) logs_menu;;        32) sys_update;;
       33) monitor_menu;;     34) ssh_menu;;         35) server_mode_menu;;
-      36) site_toggle;;      37) bot_menu;;
+      36) site_toggle;;      37) bot_menu;;      38) ipfix_menu;;
       0|q|Q|sair|exit) echo "Até mais!"; exit 0;;
       "") continue;;
       *) warn "Opção inválida"; sleep 1; continue;;
@@ -1587,6 +1712,7 @@ ${W}LK Hosting CLI v$LK_VERSION${N}
                              modo servidor (sem área de trabalho, tela apagada)
   lk tela [off|on]           apagar / acender a tela agora
   lk bot [on|off|teste]      liga / desliga o bot do WhatsApp (Guardião LK)
+  lk ip-fixo [on|IP|off|status] IP fixo na rede de casa (on = .200; se ocupado, .201, .202...)
   lk apache-443 [off|status]  Apache e Tailscale Funnel juntos na porta 443 (automático com o Tailscale)
   lk whatsapp [instalar|info|guardiao|senha|remover]
                              WhatsApp no servidor: instala, números do bot, página do QR code
@@ -1654,6 +1780,8 @@ cli() {
     bot)
       case "${2:-status}" in on|ligar) bot_set 1;; off|desligar) bot_set 0;; teste|test) php /opt/lk-guard/guard.php teste;; *) bot_status;; esac;;
     proxy-https) apache_proxy_https && ok "Sites atrás do Tailscale Funnel / Cloudflare Tunnel: PHP recebe HTTPS=on";;
+    ip-fixo|ipfixo)
+      case "${2:-}" in on|ligar) ipfix_on;; off|desligar|dhcp) ipfix_off;; status) ipfix_status;; "") LK_CLI=""; ipfix_menu;; *) ipfix_on "$2";; esac;;
     apache-443)
       case "${2:-on}" in off|desligar) apache_443_off;; status) apache_443_on && { ok "Apache escuta a 443 fora do Tailscale:"; cat "$A443_CONF"; } || warn "Apache usa Listen 443 (todos os IPs)";; *) apache_443_fix force;; esac;;
     whatsapp|wa)

@@ -69,3 +69,6 @@
 
 ## Sites sem pasta (2.2.3)
 - `site_root` / `site_root_missing` (lk): DocumentRoot que não existe (e o site não é ProxyPass) aparece com "⚠ pasta não existe" em `lk sites` e no `site_pick` (opção 36). `site_enable` avisa (vai dar 404) e pede confirmação; no modo `lk site on <site>` recusa.
+
+## IP fixo (2.3.0)
+- `lk ip-fixo [on|IP|off|status]` / opção 38 (`ipfix_*` no lk): placa e roteador pela rota padrão, começa no .200 (ou no IP dado, mesma rede) e pula IPs ocupados (`arping -D` do iputils; sem ele, ping + ip neigh). NetworkManager (`nmcli con mod … ipv4.method manual`, guarda o método antigo em /etc/lk/ip-fixo.conf) ou netplan (/etc/netplan/90-lk-ip-fixo.yaml, só cabo; Wi-Fi sem NM = reservar no roteador). Aplica com systemd-run em 3 s (o SSH cai) e reinicia o Apache se o lk apache-443 estiver ligado. `LK_YES=1` pula as confirmações.

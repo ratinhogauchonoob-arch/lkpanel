@@ -6,7 +6,7 @@ A free, aaPanel-style control panel that turns an old PC or laptop into a real s
 It manages websites, databases, files and services, and gives you a web terminal, an app store, a WhatsApp bot and access from anywhere.
 It also ships the `lk` command, a full menu-driven tool for the terminal.
 
-**Website:** YOUR-SITE-HERE · **Version:** 2.2.3 · **Systems:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+**Website:** YOUR-SITE-HERE · **Version:** 2.3.0 · **Systems:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
 > The panel interface is in Portuguese.
 
@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/ratinhogauchonoob-arch/lkpanel/main
 2. At the end it prints the address (`http://SERVER-IP:8088`), the user **`root`** and a **temporary password**.
 3. On first login the panel asks you for a new password. You can use it for the Linux root account as well, which also enables root login over SSH.
 
-After that, the terminal menu is `sudo lk`.
+After that, the terminal menu is `sudo lk`. To keep the server on a fixed IP (e.g. `192.168.0.200`): `sudo lk ip-fixo on`.
 
 ### Update
 Run the new `install.sh`. It detects the existing panel and only updates it, keeping the port, password, sites, databases and data.
@@ -53,7 +53,7 @@ sudo bash install.sh uninstall                                  # lk command
 | **App Store** | 22 one-click apps: Docker, Portainer, Jellyfin, Ollama, Open WebUI, PostgreSQL, Redis, Node + PM2, Tailscale, Cloudflare Tunnel, Fail2ban, WhatsApp + Bot and more |
 | **Internet** | Cloudflare Tunnel, quick public URL (trycloudflare), password change, 2FA, login history |
 | **Security** | Username + password login, 2FA (TOTP), IP lockout after 5 wrong passwords, alerts on WhatsApp and Telegram |
-| **`lk`** | A 37-option menu: LAMP, sites, SSL, databases, firewall, IP blocking, PM2, Supervisor, SSH, server mode, bot |
+| **`lk`** | A 38-option menu: LAMP, sites, SSL, databases, firewall, IP blocking, PM2, Supervisor, SSH, server mode, bot |
 
 ### Remote access without opening ports
 - **Tailscale**: reach the panel from anywhere, only from your own devices (available in the App Store).
@@ -102,6 +102,7 @@ cp dist/install-lk.sh install.sh # to publish the new version
 
 | Version | Changes |
 |---|---|
+| **2.3.0** | Fixed IP on the home network: `lk ip-fixo on` (or `sudo lk` › 38) keeps the server on the same IP, starting at .200 and skipping addresses already in use |
 | **2.2.3** | `lk sites` and option 36 flag sites whose folder is missing; enabling one now warns it will return 404 |
 | **2.2.2** | Websites behind Tailscale Funnel / Cloudflare Tunnel now load their CSS and JS (no more "Mixed Content"): Apache tells PHP the connection is HTTPS (`lk proxy-https`) |
 | **2.2.1** | Apache and Tailscale Funnel now share port 443 without taking the panel down (`lk apache-443`) |

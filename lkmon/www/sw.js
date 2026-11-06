@@ -1,6 +1,6 @@
 /* LK Monitor - service worker: guarda só a "casca" do app (HTML de reserva, CSS, JS e ícones).
    Respostas das rotas ?api, ?cmd, ?fm, ?hist, ?sites, ?term e da página logada nunca vão para o cache. */
-const VER = '2.2.3';
+const VER = '2.3.0';
 const CACHE = 'lkm-shell-' + VER;
 const SHELL = ['offline.html', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png',
   'fm.css?v=' + VER, 'app.css?v=' + VER, 'fm.js?v=' + VER, 'term.js?v=' + VER, 'sites.js?v=' + VER, 'db.js?v=' + VER, 'config.js?v=' + VER, 'sys.js?v=' + VER, 'apps.js?v=' + VER, 'cf.js?v=' + VER];
