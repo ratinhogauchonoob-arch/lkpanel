@@ -35,7 +35,7 @@ cat > "$TMP" <<'LK_SCRIPT_EOF'
 #        lk help     -> comandos diretos
 # =====================================================================
 
-LK_VERSION="2.2.1"
+LK_VERSION="2.2.3"
 LKM_INSTALLER="/usr/local/share/lk/install-lk-monitor.sh"
 LKM_SITE="/etc/apache2/sites-available/lkmonitor.conf"
 LK_DIR="/etc/lk"
@@ -252,6 +252,7 @@ ServerSignature Off
 TraceEnable Off
 EOF
   a2enconf lk-servername lk-security >/dev/null
+  apache_proxy_https noreload
   cat > "/etc/php/$v/fpm/conf.d/99-lk.ini" <<'EOF'
 upload_max_filesize = 64M
 post_max_size = 64M
@@ -822,6 +823,7 @@ site_list() {
     ssl="-";  c2=$D; [[ -f $APACHE_AV/$name-le-ssl.conf ]] && { ssl="sim"; c2=$G; }
     path=$(awk 'tolower($1)=="proxypass"{print $3; exit}' "$f")
     [[ -z $path ]] && path=$(awk 'tolower($1)=="documentroot"{print $2; exit}' "$f")
+    site_root_missing "$name" && path="$path ${Y}⚠ pasta não existe${N}"
     printf "  %-32s %s%-4s%s %s%-4s%s %s\n" "$name" "$c1" "$en" "$N" "$c2" "$ssl" "$N" "$path"
     ((n++))
   done
@@ -849,6 +851,9 @@ site_del() {
 }
 
 site_is_on() { [[ -e $APACHE_EN/$1.conf ]]; }
+# pasta do site (DocumentRoot); vazio para sites que são proxy (Node, apps)
+site_root() { awk 'tolower($1)=="documentroot"{gsub(/"/, "", $2); print $2; exit}' "$APACHE_AV/$1.conf" 2>/dev/null; }
+site_root_missing() { local r; r=$(site_root "$1"); [[ -n $r ]] && ! grep -qiE '^\s*proxypass\s' "$APACHE_AV/$1.conf" && [[ ! -d $r ]]; }
 
 site_pick() { # escolhe um site pelo número ou nome
   local list=() f n i o
@@ -860,8 +865,9 @@ site_pick() { # escolhe um site pelo número ou nome
   done
   ((${#list[@]})) || { warn "Nenhum site criado ainda (use a opção 23)"; return 1; }
   for i in "${!list[@]}"; do
-    if site_is_on "${list[i]}"; then printf "  (%d) %-32s %s● ligado%s\n" $((i+1)) "${list[i]}" "$G" "$N" >&2
-    else printf "  (%d) %-32s %s○ desligado%s\n" $((i+1)) "${list[i]}" "$R" "$N" >&2; fi
+    local miss=""; site_root_missing "${list[i]}" && miss="  ${Y}⚠ a pasta $(site_root "${list[i]}") não existe${N}"
+    if site_is_on "${list[i]}"; then printf "  (%d) %-32s %s● ligado%s%s\n" $((i+1)) "${list[i]}" "$G" "$N" "$miss" >&2
+    else printf "  (%d) %-32s %s○ desligado%s%s\n" $((i+1)) "${list[i]}" "$R" "$N" "$miss" >&2; fi
   done
   o=$(ask "Site (número ou nome)")
   if [[ $o =~ ^[0-9]+$ ]] && ((o >= 1 && o <= ${#list[@]})); then echo "${list[o-1]}"; return 0; fi
@@ -874,6 +880,12 @@ site_enable() {
   local d="${1:-}"
   [[ -n $d && -f $APACHE_AV/$d.conf ]] || { err "Site não encontrado: $d"; return 1; }
   site_is_on "$d" && { info "$d já está ligado"; return 0; }
+  if site_root_missing "$d"; then
+    warn "A pasta do site não existe: $(site_root "$d")"
+    warn "Ligado assim, $d vai responder com erro 404 (página não encontrada)."
+    [[ -n ${LK_CLI:-} ]] && return 1
+    confirm "Ligar mesmo assim?" || return 1
+  fi
   a2ensite "$d" >/dev/null 2>&1
   [[ -f $APACHE_AV/$d-le-ssl.conf ]] && a2ensite "$d-le-ssl" >/dev/null 2>&1
   if apache_reload; then ok "Site $d ligado"; else a2dissite "$d" >/dev/null 2>&1; err "Não foi possível ligar $d"; return 1; fi
@@ -1355,6 +1367,22 @@ server_mode_menu() {
 }
 
 # --------------------------------------------------------------------- Menu
+# Sites atrás do Tailscale Funnel / Cloudflare Tunnel chegam ao Apache em http, mas o visitante está em https.
+# Sem isto o PHP (Laravel etc.) monta links http:// e o navegador bloqueia CSS/JS ("Mixed Content").
+apache_proxy_https() {
+  [[ -d /etc/apache2/conf-available ]] || return 0
+  local f=/etc/apache2/conf-available/lk-proxy-https.conf
+  if [[ ! -f $f ]]; then
+    printf '%s\n' '# LK: sites atras do Tailscale Funnel / Cloudflare Tunnel chegam em https' \
+      'SetEnvIf Host "\.ts\.net$" HTTPS=on' 'SetEnvIf X-Forwarded-Proto "^https$" HTTPS=on' > "$f"
+  fi
+  [[ -e /etc/apache2/conf-enabled/lk-proxy-https.conf ]] && return 0
+  a2enmod -q setenvif >/dev/null 2>&1
+  a2enconf -q lk-proxy-https >/dev/null 2>&1
+  if apache2ctl configtest >/dev/null 2>&1; then [[ ${1:-} == noreload ]] || systemctl reload apache2 >/dev/null 2>&1; return 0; fi
+  a2disconf -q lk-proxy-https >/dev/null 2>&1; return 1
+}
+
 # --------------------------------------------------------------------- Apache x Tailscale na porta 443
 # O Tailscale (Serve/Funnel) escuta a 443 no IP dele (100.x). Com "Listen 443" (todos os IPs) o Apache não
 # sobe se o Tailscale pegou a porta antes (reboot, restart, apt upgrade). Aqui o Apache passa a escutar a 443
@@ -1655,6 +1683,7 @@ cli() {
       esac;;
     bot)
       case "${2:-status}" in on|ligar) bot_set 1;; off|desligar) bot_set 0;; teste|test) php /opt/lk-guard/guard.php teste;; *) bot_status;; esac;;
+    proxy-https) apache_proxy_https && ok "Sites atrás do Tailscale Funnel / Cloudflare Tunnel: PHP recebe HTTPS=on";;
     apache-443)
       case "${2:-on}" in off|desligar) apache_443_off;; status) apache_443_on && { ok "Apache escuta a 443 fora do Tailscale:"; cat "$A443_CONF"; } || warn "Apache usa Listen 443 (todos os IPs)";; *) apache_443_fix force;; esac;;
     whatsapp|wa)
@@ -1948,7 +1977,7 @@ defined('LKM_TERM_PORT') || define('LKM_TERM_PORT', '0');
 defined('LKM_USER') || define('LKM_USER', 'root');
 define('LKM_LIB', dirname(LKM_FM_HELPER));
 require LKM_LIB . '/lib.php';
-const LKM_VERSION = '2.2.1';
+const LKM_VERSION = '2.2.3';
 const LKM_LOCK_MAX = 5;     // senhas erradas seguidas no login...
 const LKM_LOCK_MIN = 15;    // ...dentro destes minutos = bloqueio do IP por este tempo
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';   // base32 do 2FA (const precisa vir antes do código que roda)
@@ -10357,7 +10386,7 @@ LKM_EOF_CFJS
 cat > "$DIR/sw.js" <<'LKM_EOF_SW'
 /* LK Monitor - service worker: guarda só a "casca" do app (HTML de reserva, CSS, JS e ícones).
    Respostas das rotas ?api, ?cmd, ?fm, ?hist, ?sites, ?term e da página logada nunca vão para o cache. */
-const VER = '2.2.1';
+const VER = '2.2.3';
 const CACHE = 'lkm-shell-' + VER;
 const SHELL = ['offline.html', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png',
   'fm.css?v=' + VER, 'app.css?v=' + VER, 'fm.js?v=' + VER, 'term.js?v=' + VER, 'sites.js?v=' + VER, 'db.js?v=' + VER, 'config.js?v=' + VER, 'sys.js?v=' + VER, 'apps.js?v=' + VER, 'cf.js?v=' + VER];
@@ -18426,6 +18455,11 @@ SVC
 systemctl daemon-reload || true
 systemctl enable lk-firewall.service >/dev/null 2>&1 || true
 /usr/bin/lk fw-restore >/dev/null 2>&1 || true
+
+# Sites atrás do Funnel / Cloudflare Tunnel: PHP enxerga https (sem "Mixed Content")
+if command -v apache2ctl >/dev/null && [[ ! -e /etc/apache2/conf-enabled/lk-proxy-https.conf ]]; then
+  /usr/bin/lk proxy-https >/dev/null 2>&1 && echo "${G}[OK]${N} Sites atrás do Tailscale Funnel / Cloudflare abrem com CSS (https)"
+fi
 
 # Tailscale instalado: o Apache não pode pedir a 443 em todos os IPs (o Funnel usa a 443 no IP do Tailscale)
 if command -v tailscale >/dev/null && command -v apache2ctl >/dev/null && ! grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf; then

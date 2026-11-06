@@ -6,9 +6,13 @@ Painel grátis, estilo aaPanel, para transformar um PC ou notebook velho num ser
 Tem sites, bancos de dados, arquivos, terminal no navegador, App Store, bot do WhatsApp e acesso de qualquer lugar.
 Também traz o comando `lk`, um menu completo no terminal.
 
-**Site:** SEU-SITE-AQUI · **Versão:** 2.2.1 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+**Site:** SEU-SITE-AQUI · **Versão:** 2.2.3 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
 > A interface do painel é em português.
+
+![Painel do LkPanel](docs/painel.webp)
+
+<p align="center"><img src="docs/appstore.webp" alt="App Store" width="68%"> <img src="docs/celular.webp" alt="LkPanel no celular" width="22%"></p>
 
 ---
 
@@ -17,7 +21,7 @@ Também traz o comando `lk`, um menu completo no terminal.
 No servidor, como root (ou com `sudo`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SEU-USUARIO/lkpanel/main/install.sh -o install.sh && sudo bash install.sh
+curl -fsSL https://raw.githubusercontent.com/ratinhogauchonoob-arch/lkpanel/main/install.sh -o install.sh && sudo bash install.sh
 ```
 
 1. Aperte **Enter** em "Instalar o painel agora?". Ele instala sozinho, sem fazer perguntas: Apache, PHP, MariaDB, SSH e o painel.
@@ -81,6 +85,8 @@ cp dist/install-lk.sh install.sh # para publicar a versão nova
 
 | Versão | O que mudou |
 |---|---|
+| **2.2.3** | `lk sites` e a opção 36 mostram quando a pasta de um site sumiu; ligar um site assim avisa que vai dar 404 |
+| **2.2.2** | Sites atrás do Tailscale Funnel / Cloudflare Tunnel abrem com CSS e JS (sem "Mixed Content"): o Apache avisa o PHP que a conexão é https (`lk proxy-https`) |
 | **2.2.1** | Apache e Tailscale Funnel juntos na porta 443 sem derrubar o painel (`lk apache-443`) |
 | **2.2.0** | Instalação sem perguntas (`lk setup`). Senha temporária trocada no 1º acesso, com opção de usar no root e ligar o SSH dele. Login com usuário. WhatsApp + Bot dentro do LK e na App Store. Menu do `lk` em ordem |
 | **2.1.0** | Login com 2 fatores (TOTP) e códigos de recuperação |

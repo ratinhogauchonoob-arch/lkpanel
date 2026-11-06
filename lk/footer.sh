@@ -31,6 +31,11 @@ systemctl daemon-reload || true
 systemctl enable lk-firewall.service >/dev/null 2>&1 || true
 /usr/bin/lk fw-restore >/dev/null 2>&1 || true
 
+# Sites atrás do Funnel / Cloudflare Tunnel: PHP enxerga https (sem "Mixed Content")
+if command -v apache2ctl >/dev/null && [[ ! -e /etc/apache2/conf-enabled/lk-proxy-https.conf ]]; then
+  /usr/bin/lk proxy-https >/dev/null 2>&1 && echo "${G}[OK]${N} Sites atrás do Tailscale Funnel / Cloudflare abrem com CSS (https)"
+fi
+
 # Tailscale instalado: o Apache não pode pedir a 443 em todos os IPs (o Funnel usa a 443 no IP do Tailscale)
 if command -v tailscale >/dev/null && command -v apache2ctl >/dev/null && ! grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf; then
   echo "${C}[..]${N} Ajustando o Apache para dividir a porta 443 com o Tailscale..."

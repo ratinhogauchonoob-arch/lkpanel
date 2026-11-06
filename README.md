@@ -6,9 +6,13 @@ A free, aaPanel-style control panel that turns an old PC or laptop into a real s
 It manages websites, databases, files and services, and gives you a web terminal, an app store, a WhatsApp bot and access from anywhere.
 It also ships the `lk` command, a full menu-driven tool for the terminal.
 
-**Website:** YOUR-SITE-HERE · **Version:** 2.2.1 · **Systems:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+**Website:** YOUR-SITE-HERE · **Version:** 2.2.3 · **Systems:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
 > The panel interface is in Portuguese.
+
+![LkPanel dashboard](docs/painel.webp)
+
+<p align="center"><img src="docs/appstore.webp" alt="App Store" width="68%"> <img src="docs/celular.webp" alt="LkPanel on a phone" width="22%"></p>
 
 ---
 
@@ -17,7 +21,7 @@ It also ships the `lk` command, a full menu-driven tool for the terminal.
 On the server, as root (or with `sudo`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR-USERNAME/lkpanel/main/install.sh -o install.sh && sudo bash install.sh
+curl -fsSL https://raw.githubusercontent.com/ratinhogauchonoob-arch/lkpanel/main/install.sh -o install.sh && sudo bash install.sh
 ```
 
 1. Press **Enter** at "Instalar o painel agora?" ("Install the panel now?"). It installs Apache, PHP, MariaDB, SSH and the panel without asking any questions.
@@ -98,6 +102,8 @@ cp dist/install-lk.sh install.sh # to publish the new version
 
 | Version | Changes |
 |---|---|
+| **2.2.3** | `lk sites` and option 36 flag sites whose folder is missing; enabling one now warns it will return 404 |
+| **2.2.2** | Websites behind Tailscale Funnel / Cloudflare Tunnel now load their CSS and JS (no more "Mixed Content"): Apache tells PHP the connection is HTTPS (`lk proxy-https`) |
 | **2.2.1** | Apache and Tailscale Funnel now share port 443 without taking the panel down (`lk apache-443`) |
 | **2.2.0** | No-questions install (`lk setup`). Temporary password replaced on first login, optionally applied to root with SSH root login enabled. Username on the login page. WhatsApp + Bot built into LK and in the App Store. `lk` menu in numeric order |
 | **2.1.0** | Two-factor login (TOTP) and recovery codes |
