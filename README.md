@@ -6,7 +6,7 @@ A free, aaPanel-style control panel that turns an old PC or laptop into a real s
 It manages websites, databases, files and services, and gives you a web terminal, an app store, a WhatsApp bot and access from anywhere.
 It also ships the `lk` command, a full menu-driven tool for the terminal.
 
-**Website:** YOUR-SITE-HERE · **Version:** 2.3.0 · **Systems:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+**Website:** [lkpanel.goodbits.tech](https://lkpanel.goodbits.tech/) · **Version:** 2.3.0 · **Systems:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
 > The panel interface is in Portuguese.
 

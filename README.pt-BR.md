@@ -6,7 +6,7 @@ Painel grátis, estilo aaPanel, para transformar um PC ou notebook velho num ser
 Tem sites, bancos de dados, arquivos, terminal no navegador, App Store, bot do WhatsApp e acesso de qualquer lugar.
 Também traz o comando `lk`, um menu completo no terminal.
 
-**Site:** SEU-SITE-AQUI · **Versão:** 2.3.0 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+**Site:** [lkpanel.goodbits.tech](https://lkpanel.goodbits.tech/) · **Versão:** 2.3.0 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
 > A interface do painel é em português.
 
