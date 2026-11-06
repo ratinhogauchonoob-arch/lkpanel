@@ -31,6 +31,12 @@ systemctl daemon-reload || true
 systemctl enable lk-firewall.service >/dev/null 2>&1 || true
 /usr/bin/lk fw-restore >/dev/null 2>&1 || true
 
+# Tailscale instalado: o Apache não pode pedir a 443 em todos os IPs (o Funnel usa a 443 no IP do Tailscale)
+if command -v tailscale >/dev/null && command -v apache2ctl >/dev/null && ! grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf; then
+  echo "${C}[..]${N} Ajustando o Apache para dividir a porta 443 com o Tailscale..."
+  /usr/bin/lk apache-443 || echo "  aviso: não deu para ajustar agora (depois: sudo lk apache-443)"
+fi
+
 # Painel já instalado: atualiza junto, mantendo porta, senha, usuário do terminal e dados
 if [[ -f /var/www/lkmonitor/config.php && -f /etc/apache2/sites-available/lkmonitor.conf ]]; then
   echo "${C}[..]${N} Atualizando o LK Monitor (painel web) já instalado..."

@@ -1,95 +1,115 @@
 # LkPanel
 
-Painel grátis, estilo aaPanel, para transformar um PC ou notebook velho num servidor de verdade.
-Tem sites, bancos de dados, arquivos, terminal no navegador, App Store, bot do WhatsApp e acesso de qualquer lugar.
-Também traz o comando `lk`, um menu completo no terminal.
+**English** · [Português](README.pt-BR.md)
 
-**Site:** SEU-SITE-AQUI · **Versão:** 2.2.0 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+A free, aaPanel-style control panel that turns an old PC or laptop into a real server.
+It manages websites, databases, files and services, and gives you a web terminal, an app store, a WhatsApp bot and access from anywhere.
+It also ships the `lk` command, a full menu-driven tool for the terminal.
 
-> A interface do painel é em português.
+**Website:** YOUR-SITE-HERE · **Version:** 2.2.1 · **Systems:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
----
-
-## Instalar
-
-No servidor, como root (ou com `sudo`):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SEU-USUARIO/lkpanel/main/install.sh -o install.sh && sudo bash install.sh
-```
-
-1. Aperte **Enter** em "Instalar o painel agora?". Ele instala sozinho, sem fazer perguntas: Apache, PHP, MariaDB, SSH e o painel.
-2. No final aparecem o endereço (`http://IP-DO-SERVIDOR:8088`), o usuário **`root`** e uma **senha temporária**.
-3. No 1º login, o painel pede uma senha nova. Ela pode valer também para o root do Linux, com o SSH do root ligado.
-
-Depois disso, o menu no terminal é o `sudo lk`.
-
-### Atualizar
-Rode o `install.sh` novo. Ele detecta o painel instalado e só atualiza, mantendo porta, senha, sites, bancos e dados.
-
-### Remover
-```bash
-sudo bash /usr/local/share/lk/install-lk-monitor.sh uninstall   # painel
-sudo bash install.sh uninstall                                  # comando lk
-```
+> The panel interface is in Portuguese.
 
 ---
 
-## O que tem
+## Install
 
-| Parte | O que faz |
+On the server, as root (or with `sudo`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YOUR-USERNAME/lkpanel/main/install.sh -o install.sh && sudo bash install.sh
+```
+
+1. Press **Enter** at "Instalar o painel agora?" ("Install the panel now?"). It installs Apache, PHP, MariaDB, SSH and the panel without asking any questions.
+2. At the end it prints the address (`http://SERVER-IP:8088`), the user **`root`** and a **temporary password**.
+3. On first login the panel asks you for a new password. You can use it for the Linux root account as well, which also enables root login over SSH.
+
+After that, the terminal menu is `sudo lk`.
+
+### Update
+Run the new `install.sh`. It detects the existing panel and only updates it, keeping the port, password, sites, databases and data.
+
+### Uninstall
+```bash
+sudo bash /usr/local/share/lk/install-lk-monitor.sh uninstall   # panel
+sudo bash install.sh uninstall                                  # lk command
+```
+
+---
+
+## Features
+
+| Area | What it does |
 |---|---|
-| **Painel** | CPU, memória, disco, temperatura e rede ao vivo, com gráficos de 7 dias. Serviços, processos, modo servidor, reiniciar e desligar |
-| **Sites** | Criar, ligar e desligar, deploy Laravel, backups com restauração, SSL (Let's Encrypt), logs |
-| **Bancos** | MariaDB e SQLite: bancos, usuários, senhas e consultas |
-| **Arquivos** | Gerenciador completo com editor de código, upload, zip e permissões |
-| **Terminal** | Terminal completo (xterm.js) com abas |
-| **App Store** | 22 apps com um clique: Docker, Portainer, Jellyfin, Ollama, Open WebUI, PostgreSQL, Redis, Node + PM2, Tailscale, Cloudflare Tunnel, Fail2ban, WhatsApp + Bot e outros |
-| **Internet** | Cloudflare Tunnel, teste rápido (trycloudflare), troca de senha, 2FA, histórico de acessos |
-| **Segurança** | Login com usuário e senha, 2FA (TOTP), bloqueio de IP depois de 5 senhas erradas, avisos no WhatsApp e no Telegram |
-| **`lk`** | Menu com 37 opções: LAMP, sites, SSL, bancos, firewall, bloqueio de IP, PM2, Supervisor, SSH, modo servidor, bot |
+| **Dashboard** | Live CPU, memory, disk, temperature and network, with 7-day charts. Services, processes, server mode, restart and shutdown |
+| **Sites** | Create sites, turn them on and off, deploy Laravel apps, back up and restore, SSL (Let's Encrypt), logs |
+| **Databases** | MariaDB and SQLite: databases, users, passwords and queries |
+| **Files** | Full file manager with a code editor, upload, zip and permissions |
+| **Terminal** | Full web terminal (xterm.js) with tabs |
+| **App Store** | 22 one-click apps: Docker, Portainer, Jellyfin, Ollama, Open WebUI, PostgreSQL, Redis, Node + PM2, Tailscale, Cloudflare Tunnel, Fail2ban, WhatsApp + Bot and more |
+| **Internet** | Cloudflare Tunnel, quick public URL (trycloudflare), password change, 2FA, login history |
+| **Security** | Username + password login, 2FA (TOTP), IP lockout after 5 wrong passwords, alerts on WhatsApp and Telegram |
+| **`lk`** | A 37-option menu: LAMP, sites, SSL, databases, firewall, IP blocking, PM2, Supervisor, SSH, server mode, bot |
+
+### Remote access without opening ports
+- **Tailscale**: reach the panel from anywhere, only from your own devices (available in the App Store).
+- **Tailscale Funnel**: a fixed public `https://` address to share a site with anyone.
+- **Cloudflare Tunnel**: use your own domain with HTTPS. Also works behind CGNAT.
 
 ---
 
-## Código-fonte
+## Requirements
+
+| | |
+|---|---|
+| System | Ubuntu 22.04, 24.04 or 26.04 · Debian 12 |
+| Memory | 2 GB (4 GB or more for Docker and AI apps) |
+| Disk | 20 GB free |
+| Access | root or a user with sudo |
+| Internet | to download packages during installation |
+
+---
+
+## Source code
 
 ```
 lkpanel/
-├── install.sh                  instalador pronto (gerado pelo build.sh)
-├── build.sh / build.py         geram dist/install-lk.sh, dist/atualizar-lk.sh e dist/install-whatsapp.sh
-├── CLAUDE.md                   anotações técnicas de cada versão
-├── lk/                         o comando lk (header.sh, lk, middle.sh, footer.sh)
+├── install.sh                  ready-to-use installer (built by build.sh)
+├── build.sh / build.py         build dist/install-lk.sh, dist/atualizar-lk.sh and dist/install-whatsapp.sh
+├── CLAUDE.md                   technical notes for each version (Portuguese)
+├── lk/                         the lk command (header.sh, lk, middle.sh, footer.sh)
 ├── lkmon/
-│   ├── install-lk-monitor.sh   instalador do painel (@@FILE / @@BASE64 / @@DIR)
-│   ├── www/                    vai para /var/www/lkmonitor (index.php, JS, CSS, ícones)
-│   └── lib/                    vai para /usr/local/lib/lkmonitor (helpers que rodam como root)
-└── whatsapp/                   WhatsApp (GOWA), página do QR code e bot Guardião
+│   ├── install-lk-monitor.sh   panel installer (@@FILE / @@BASE64 / @@DIR directives)
+│   ├── www/                    goes to /var/www/lkmonitor (index.php, JS, CSS, icons)
+│   └── lib/                    goes to /usr/local/lib/lkmonitor (helpers that run as root)
+└── whatsapp/                   WhatsApp (GOWA), QR code page and the Guardião bot
 ```
 
-### Gerar o instalador
-Precisa de `bash`, `php` (CLI) e `python3`.
+### Build the installer
+You need `bash`, `php` (CLI) and `python3`.
 ```bash
-./build.sh                       # confere a sintaxe de tudo e gera a pasta dist/
-cp dist/install-lk.sh install.sh # para publicar a versão nova
+./build.sh                       # checks the syntax of everything and builds the dist/ folder
+cp dist/install-lk.sh install.sh # to publish the new version
 ```
 
 ---
 
-## Versões
+## Changelog
 
-| Versão | O que mudou |
+| Version | Changes |
 |---|---|
-| **2.2.0** | Instalação sem perguntas (`lk setup`). Senha temporária trocada no 1º acesso, com opção de usar no root e ligar o SSH dele. Login com usuário. WhatsApp + Bot dentro do LK e na App Store. Menu do `lk` em ordem |
-| **2.1.0** | Login com 2 fatores (TOTP) e códigos de recuperação |
-| **2.0.x** | Aba Internet (Cloudflare Tunnel), bloqueio de senhas erradas, histórico de acessos, IP real atrás de proxy |
-| **1.9.0** | Visual clássico estilo aaPanel |
+| **2.2.1** | Apache and Tailscale Funnel now share port 443 without taking the panel down (`lk apache-443`) |
+| **2.2.0** | No-questions install (`lk setup`). Temporary password replaced on first login, optionally applied to root with SSH root login enabled. Username on the login page. WhatsApp + Bot built into LK and in the App Store. `lk` menu in numeric order |
+| **2.1.0** | Two-factor login (TOTP) and recovery codes |
+| **2.0.x** | Internet tab (Cloudflare Tunnel), wrong-password lockout, login history, real client IP behind proxies |
+| **1.9.0** | Classic aaPanel-style look |
 | **1.8.0** | App Store |
-| **1.7.0** | Botões de serviços, processos, modo servidor e energia |
+| **1.7.0** | Buttons for services, processes, server mode and power |
 
 ---
 
-## Aviso
+## Security notice
 
-O painel tem terminal como root. Use senha forte e ligue o 2FA. De preferência, acesse o painel pelo Tailscale e publique na internet só os seus sites.
+The panel includes a root terminal. Use a strong password and turn on 2FA. Ideally, reach the panel through Tailscale and only publish your websites to the internet.
 
-Feito com 🐱 pela Megan.
+Made with 🐱 by Megan.

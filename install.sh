@@ -35,7 +35,7 @@ cat > "$TMP" <<'LK_SCRIPT_EOF'
 #        lk help     -> comandos diretos
 # =====================================================================
 
-LK_VERSION="2.2.0"
+LK_VERSION="2.2.1"
 LKM_INSTALLER="/usr/local/share/lk/install-lk-monitor.sh"
 LKM_SITE="/etc/apache2/sites-available/lkmonitor.conf"
 LK_DIR="/etc/lk"
@@ -1355,6 +1355,68 @@ server_mode_menu() {
 }
 
 # --------------------------------------------------------------------- Menu
+# --------------------------------------------------------------------- Apache x Tailscale na porta 443
+# O Tailscale (Serve/Funnel) escuta a 443 no IP dele (100.x). Com "Listen 443" (todos os IPs) o Apache não
+# sobe se o Tailscale pegou a porta antes (reboot, restart, apt upgrade). Aqui o Apache passa a escutar a 443
+# só nos IPs que não são do Tailscale; a lista é refeita a cada início do Apache (ExecStartPre).
+A443_BIN=/usr/local/sbin/lk-apache-listen
+A443_CONF=/etc/apache2/lk-listen-443.conf
+A443_DROP=/etc/systemd/system/apache2.service.d/lk-listen-443.conf
+apache_443_on() { grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf; }
+apache_443_fix() {
+  [[ -f /etc/apache2/ports.conf ]] || return 0
+  if [[ ${1:-} != force ]] && ! has tailscale; then return 0; fi
+  cat > "$A443_BIN" <<'LK_A443_EOF'
+#!/bin/bash
+# LK: gera /etc/apache2/lk-listen-443.conf com a porta 443 só nos IPs que NÃO são do Tailscale.
+# Roda sozinho antes de cada início do Apache. Para desfazer: lk apache-443 off
+out=/etc/apache2/lk-listen-443.conf
+# sem o comando ip não dá para saber os IPs: volta ao normal (todos os IPs)
+command -v ip >/dev/null || { echo "Listen 443" > "$out"; exit 0; }
+{
+  echo "# gerado por $0 a cada início do Apache - não edite"
+  echo "Listen 127.0.0.1:443"
+  ip -6 addr show dev lo 2>/dev/null | grep -q 'inet6 ::1/' && echo "Listen [::1]:443"
+  ip -o -4 addr show up 2>/dev/null | awk '$2 != "lo" && $2 !~ /^tailscale/ {split($4, a, "/"); print a[1]}' | sort -u | while read -r ip; do
+    IFS=. read -r a b _ _ <<< "$ip"
+    [[ $a == 100 ]] && ((b >= 64 && b <= 127)) && continue   # faixa do Tailscale (100.64.0.0/10)
+    echo "Listen $ip:443"
+  done
+} > "$out.tmp" && mv -f "$out.tmp" "$out"
+exit 0
+LK_A443_EOF
+  chmod 755 "$A443_BIN"
+  "$A443_BIN"
+  if ! apache_443_on; then
+    cp -a /etc/apache2/ports.conf /etc/apache2/ports.conf.lk-bak
+    sed -i -E 's/^(\s*)Listen\s+443\s*$/\1Include lk-listen-443.conf/' /etc/apache2/ports.conf
+  fi
+  mkdir -p "$(dirname "$A443_DROP")"
+  cat > "$A443_DROP" <<'LK_A443_EOF'
+# LK: Apache escuta a 443 só fora do Tailscale (lk apache-443)
+[Unit]
+Wants=network-online.target
+After=network-online.target tailscaled.service
+[Service]
+ExecStartPre=/usr/local/sbin/lk-apache-listen
+LK_A443_EOF
+  systemctl daemon-reload
+  if ! apache2ctl configtest >/dev/null 2>&1; then
+    [[ -f /etc/apache2/ports.conf.lk-bak ]] && cp -a /etc/apache2/ports.conf.lk-bak /etc/apache2/ports.conf
+    rm -f "$A443_DROP"; systemctl daemon-reload
+    warn "Apache x Tailscale: a configuração ficou com erro e foi desfeita"; return 1
+  fi
+  # restart (não reload): troca o 0.0.0.0:443 pelos IPs certos; o painel cai por 1-2 segundos
+  if systemctl restart apache2; then ok "Apache e Tailscale dividem a porta 443 sem conflito ($(grep -c '^Listen' "$A443_CONF") endereço(s))"
+  else err "O Apache não subiu. Veja: journalctl -u apache2 -n 20 --no-pager  (desfazer: lk apache-443 off)"; return 1; fi
+}
+apache_443_off() {
+  [[ -f /etc/apache2/ports.conf.lk-bak ]] && cp -a /etc/apache2/ports.conf.lk-bak /etc/apache2/ports.conf \
+    || sed -i -E 's/^(\s*)Include\s+lk-listen-443\.conf\s*$/\1Listen 443/' /etc/apache2/ports.conf
+  rm -f "$A443_DROP" "$A443_CONF"; systemctl daemon-reload
+  apache2ctl configtest >/dev/null 2>&1 && systemctl restart apache2 && ok "Apache voltou a escutar a 443 em todos os IPs (Listen 443)"
+}
+
 # --------------------------------------------------------------------- Bot do WhatsApp (Guardião LK)
 # LK-BOT-PATCH: já vem no lk desde a 2.2.0 (o lk-bot-patch.sh antigo pula esta parte)
 WA_INSTALLER="/usr/local/share/lk/install-whatsapp.sh"
@@ -1527,6 +1589,7 @@ ${W}LK Hosting CLI v$LK_VERSION${N}
                              modo servidor (sem área de trabalho, tela apagada)
   lk tela [off|on]           apagar / acender a tela agora
   lk bot [on|off|teste]      liga / desliga o bot do WhatsApp (Guardião LK)
+  lk apache-443 [off|status]  Apache e Tailscale Funnel juntos na porta 443 (automático com o Tailscale)
   lk whatsapp [instalar|info|guardiao|senha|remover]
                              WhatsApp no servidor: instala, números do bot, página do QR code
   lk temp                    temperatura da CPU
@@ -1592,6 +1655,8 @@ cli() {
       esac;;
     bot)
       case "${2:-status}" in on|ligar) bot_set 1;; off|desligar) bot_set 0;; teste|test) php /opt/lk-guard/guard.php teste;; *) bot_status;; esac;;
+    apache-443)
+      case "${2:-on}" in off|desligar) apache_443_off;; status) apache_443_on && { ok "Apache escuta a 443 fora do Tailscale:"; cat "$A443_CONF"; } || warn "Apache usa Listen 443 (todos os IPs)";; *) apache_443_fix force;; esac;;
     whatsapp|wa)
       case "${2:-}" in
         ""|instalar|install|atualizar|update) wa_run;;
@@ -1883,7 +1948,7 @@ defined('LKM_TERM_PORT') || define('LKM_TERM_PORT', '0');
 defined('LKM_USER') || define('LKM_USER', 'root');
 define('LKM_LIB', dirname(LKM_FM_HELPER));
 require LKM_LIB . '/lib.php';
-const LKM_VERSION = '2.2.0';
+const LKM_VERSION = '2.2.1';
 const LKM_LOCK_MAX = 5;     // senhas erradas seguidas no login...
 const LKM_LOCK_MIN = 15;    // ...dentro destes minutos = bloqueio do IP por este tempo
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';   // base32 do 2FA (const precisa vir antes do código que roda)
@@ -10292,7 +10357,7 @@ LKM_EOF_CFJS
 cat > "$DIR/sw.js" <<'LKM_EOF_SW'
 /* LK Monitor - service worker: guarda só a "casca" do app (HTML de reserva, CSS, JS e ícones).
    Respostas das rotas ?api, ?cmd, ?fm, ?hist, ?sites, ?term e da página logada nunca vão para o cache. */
-const VER = '2.2.0';
+const VER = '2.2.1';
 const CACHE = 'lkm-shell-' + VER;
 const SHELL = ['offline.html', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png',
   'fm.css?v=' + VER, 'app.css?v=' + VER, 'fm.js?v=' + VER, 'term.js?v=' + VER, 'sites.js?v=' + VER, 'db.js?v=' + VER, 'config.js?v=' + VER, 'sys.js?v=' + VER, 'apps.js?v=' + VER, 'cf.js?v=' + VER];
@@ -14834,7 +14899,8 @@ BASH_PMA;
             'note' => 'Ver bloqueados: sudo fail2ban-client status sshd'],
         ['id' => 'tailscale', 'name' => 'Tailscale', 'cat' => 'net', 'color' => '#4b5563', 'bin' => 'tailscale', 'ver' => 'tailscale version 2>/dev/null | head -1', 'svc' => 'tailscaled',
             'desc' => 'VPN fácil: acesse o servidor e o painel de qualquer lugar, sem abrir portas no roteador.',
-            'install' => [['Instalar Tailscale (script oficial)', 'curl -fsSL https://tailscale.com/install.sh | sh']],
+            'install' => [['Instalar Tailscale (script oficial)', 'curl -fsSL https://tailscale.com/install.sh | sh'],
+                ['Apache e Tailscale juntos na porta 443', 'if [ -x /usr/bin/lk ] && [ -f /etc/apache2/ports.conf ]; then /usr/bin/lk apache-443; else echo "Sem Apache: nada a fazer"; fi']],
             'remove' => [['Remover Tailscale', 'tailscale down 2>/dev/null; ' . app_rm_pkgs(['tailscale'])]],
             'note' => 'Para conectar na sua conta: no Terminal rode sudo tailscale up e abra o link que aparecer.'],
         ['id' => 'cloudflared', 'name' => 'Cloudflare Tunnel', 'cat' => 'net', 'color' => '#f38020', 'bin' => 'cloudflared', 'ver' => 'cloudflared --version 2>/dev/null | head -1', 'svc' => 'lk-cloudflared',
@@ -18360,6 +18426,12 @@ SVC
 systemctl daemon-reload || true
 systemctl enable lk-firewall.service >/dev/null 2>&1 || true
 /usr/bin/lk fw-restore >/dev/null 2>&1 || true
+
+# Tailscale instalado: o Apache não pode pedir a 443 em todos os IPs (o Funnel usa a 443 no IP do Tailscale)
+if command -v tailscale >/dev/null && command -v apache2ctl >/dev/null && ! grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf; then
+  echo "${C}[..]${N} Ajustando o Apache para dividir a porta 443 com o Tailscale..."
+  /usr/bin/lk apache-443 || echo "  aviso: não deu para ajustar agora (depois: sudo lk apache-443)"
+fi
 
 # Painel já instalado: atualiza junto, mantendo porta, senha, usuário do terminal e dados
 if [[ -f /var/www/lkmonitor/config.php && -f /etc/apache2/sites-available/lkmonitor.conf ]]; then
