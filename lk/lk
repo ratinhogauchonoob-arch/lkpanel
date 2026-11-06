@@ -1,0 +1,1599 @@
+#!/usr/bin/env bash
+# =====================================================================
+#  LK - Mini gestor de hosting via terminal (Ubuntu / Debian)
+#  Uso:  lk          -> menu interativo
+#        lk help     -> comandos diretos
+# =====================================================================
+
+LK_VERSION="2.2.0"
+LKM_INSTALLER="/usr/local/share/lk/install-lk-monitor.sh"
+LKM_SITE="/etc/apache2/sites-available/lkmonitor.conf"
+LK_DIR="/etc/lk"
+LK_BLOCKLIST="$LK_DIR/blocked_ips.txt"
+LK_DBFILE="$LK_DIR/databases.txt"
+LK_BACKUPS="/root/lk-backups"
+LK_LOG="/var/log/lk.log"
+WWW="/var/www"
+APACHE_AV="/etc/apache2/sites-available"
+APACHE_EN="/etc/apache2/sites-enabled"
+DEFAULT_ROOT="/var/www/default"
+LK_CLI=""
+
+if [[ -t 1 ]]; then
+  R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'; W=$'\e[1m'; D=$'\e[2m'; N=$'\e[0m'
+else
+  R=""; G=""; Y=""; C=""; W=""; D=""; N=""
+fi
+
+# --------------------------------------------------------------------- utilidades
+log()     { echo "$(date '+%F %T') $*" >> "$LK_LOG" 2>/dev/null || true; }
+ok()      { echo "${G}[OK]${N} $*"; log "OK: $*"; }
+err()     { echo "${R}[ERRO]${N} $*" >&2; log "ERRO: $*"; }
+info()    { echo "${C}[..]${N} $*"; }
+warn()    { echo "${Y}[!]${N} $*"; }
+title()   { echo; echo "${W}${C}== $* ==${N}"; }
+has()     { command -v "$1" >/dev/null 2>&1; }
+svc_has() { systemctl cat "$1" >/dev/null 2>&1; }
+is_aapanel() { [[ -d /www/server/panel ]]; }
+apt_i()   { DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"; }
+pause()   { [[ -n "$LK_CLI" ]] && return 0; echo; read -rp "ENTER para voltar ao menu..." _ ; }
+ask()     { local q="$1" def="${2:-}" a
+            if [[ -n "$def" ]]; then read -rp "$q [$def]: " a; echo "${a:-$def}"
+            else read -rp "$q: " a; echo "$a"; fi; }
+confirm()     { local a; read -rp "$1 [s/N]: " a; [[ "$a" =~ ^[sSyY]$ ]]; }
+confirm_yes() { local a; read -rp "$1 [S/n]: " a; [[ ! "$a" =~ ^[nN]$ ]]; }
+gen_pass()    { tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 20; }
+html_esc()    { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' <<< "$1"; }
+follow()      { info "Ctrl+C para parar"; trap 'echo' INT; "$@"; trap - INT; }
+
+load_os() {
+  OS_ID=""; OS_NAME="Linux"
+  if [[ -r /etc/os-release ]]; then
+    OS_ID=$(. /etc/os-release; echo "${ID:-}")
+    OS_NAME=$(. /etc/os-release; echo "${PRETTY_NAME:-Linux}")
+  fi
+}
+
+php_versions() { ls /etc/php 2>/dev/null | grep -E '^[0-9]+\.[0-9]+$' | sort -V; }
+php_default()  { has php && php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null; }
+fpm_services() { systemctl list-unit-files --no-legend --type=service 'php*fpm*' 2>/dev/null | awk '{print $1}' | sed 's/\.service$//' | sort -u; }
+apache_svc()   { local s; for s in apache2 httpd; do svc_has "$s" && { echo "$s"; return 0; }; done; return 1; }
+db_svc()       { local s; for s in mariadb mysql mysqld; do svc_has "$s" && { echo "$s"; return 0; }; done; return 1; }
+
+choose_from() { # choose_from "titulo" item1 item2 ... -> echo item escolhido (padrão = último)
+  local t="$1"; shift; local items=("$@") i o
+  ((${#items[@]})) || return 1
+  if ((${#items[@]} == 1)); then echo "${items[0]}"; return 0; fi
+  echo "$t" >&2
+  for i in "${!items[@]}"; do echo "  ($((i+1))) ${items[i]}" >&2; done
+  o=$(ask "Escolha" "${#items[@]}")
+  if [[ $o =~ ^[0-9]+$ ]] && ((o >= 1 && o <= ${#items[@]})); then echo "${items[o-1]}"; else echo "${items[-1]}"; fi
+}
+
+pick_php() { # versão com FPM
+  local vs=() v
+  for v in $(php_versions); do [[ -d /etc/php/$v/fpm ]] && vs+=("$v"); done
+  ((${#vs[@]})) || { err "Nenhum PHP-FPM instalado (use a opção 1)."; return 1; }
+  choose_from "Versões do PHP-FPM:" "${vs[@]}"
+}
+
+pick_php_bin() {
+  local bins=() b
+  for b in /usr/bin/php[0-9]*.[0-9]*; do [[ -x $b ]] && bins+=("$b"); done
+  if ((${#bins[@]} == 0)); then command -v php; return; fi
+  choose_from "Binário do PHP:" "${bins[@]}"
+}
+
+need_apache() {
+  [[ -d /etc/apache2 ]] && return 0
+  if is_aapanel; then err "Este servidor usa o Apache do aaPanel. Gerencie os sites pelo painel."
+  else err "Apache não instalado (use a opção 1)."; fi
+  return 1
+}
+
+apache_test() {
+  if has apache2ctl; then apache2ctl configtest
+  elif [[ -x /www/server/apache/bin/apachectl ]]; then /www/server/apache/bin/apachectl -t
+  else return 0; fi
+}
+
+apache_reload() {
+  local out
+  if ! out=$(apache_test 2>&1); then err "Configuração do Apache com erro:"; echo "$out"; return 1; fi
+  systemctl reload "$(apache_svc)" && return 0
+}
+
+# --------------------------------------------------------------------- serviços
+svc_restart() {
+  local s
+  for s in "$@"; do
+    if svc_has "$s"; then
+      info "Reiniciando $s..."
+      if systemctl restart "$s"; then ok "$s reiniciado"
+      else err "Falha ao reiniciar $s"; systemctl status "$s" --no-pager -l 2>/dev/null | tail -n 15; fi
+    else warn "Serviço $s não encontrado"; fi
+  done
+}
+
+restart_apache() {
+  local s out
+  s=$(apache_svc) || { warn "Apache não encontrado"; return 1; }
+  if ! out=$(apache_test 2>&1); then err "Configuração com erro, restart cancelado:"; echo "$out"; return 1; fi
+  svc_restart "$s"
+}
+restart_db()   { local s; s=$(db_svc) || { warn "MariaDB/MySQL não encontrado"; return 1; }; svc_restart "$s"; }
+restart_php()  { local l; l=$(fpm_services); [[ -n $l ]] || { warn "Nenhum PHP-FPM encontrado"; return 1; }; svc_restart $l; }
+restart_lamp() { restart_php; restart_db; restart_apache; }
+
+known_services() {
+  local s
+  for s in apache2 httpd nginx; do svc_has "$s" && echo "$s"; done
+  if svc_has mariadb; then echo mariadb; else for s in mysql mysqld; do svc_has "$s" && { echo "$s"; break; }; done; fi
+  fpm_services
+  for s in redis-server supervisor cron ssh fail2ban docker pm2-root; do svc_has "$s" && echo "$s"; done
+}
+
+svc_manage() {
+  title "Gerenciar serviço"
+  local list=() s i o a
+  mapfile -t list < <(known_services)
+  ((${#list[@]})) || { warn "Nenhum serviço conhecido encontrado"; return 1; }
+  for i in "${!list[@]}"; do printf "  (%d) %-22s %s\n" $((i+1)) "${list[i]}" "$(systemctl is-active "${list[i]}" 2>/dev/null)"; done
+  o=$(ask "Serviço (número ou nome)")
+  if [[ $o =~ ^[0-9]+$ ]]; then ((o >= 1)) && s="${list[o-1]:-}"; else s="$o"; fi
+  if [[ -z $s ]] || ! svc_has "$s"; then err "Serviço inválido"; return 1; fi
+  echo "  (1) Iniciar  (2) Parar  (3) Reiniciar  (4) Recarregar  (5) Status  (6) Ativar no boot  (7) Desativar no boot"
+  a=$(ask "Ação" 3)
+  if [[ $s == ssh && $a =~ ^(2|7)$ ]]; then confirm "Parar o SSH pode te deixar sem acesso. Continuar?" || return 1; fi
+  case $a in
+    1) systemctl start "$s";;
+    2) systemctl stop "$s";;
+    3) systemctl restart "$s";;
+    4) systemctl reload "$s";;
+    5) systemctl status "$s" --no-pager -l | head -n 25; return 0;;
+    6) systemctl enable "$s";;
+    7) systemctl disable "$s";;
+    *) err "Ação inválida"; return 1;;
+  esac && ok "$s: $(systemctl is-active "$s" 2>/dev/null)"
+}
+
+show_status() {
+  title "Status dos serviços"
+  local s st
+  for s in $(known_services); do
+    st=$(systemctl is-active "$s" 2>/dev/null)
+    if [[ $st == active ]]; then printf "  %-22s %s● ativo%s\n" "$s" "$G" "$N"
+    else printf "  %-22s %s○ %s%s\n" "$s" "$R" "${st:-desconhecido}" "$N"; fi
+  done
+  has pm2 && echo "  PM2: $(pm2 jlist 2>/dev/null | grep -o '"pm_id"' | wc -l) app(s)"
+  echo "  IPs bloqueados: $(blocked_count)"
+}
+
+# --------------------------------------------------------------------- LAMP
+add_php_repo() {
+  local code; code=$(. /etc/os-release; echo "${VERSION_CODENAME:-}")
+  if [[ $OS_ID == ubuntu ]]; then
+    apt_i software-properties-common >/dev/null && add-apt-repository -y ppa:ondrej/php >/dev/null || return 1
+  elif [[ $OS_ID == debian ]]; then
+    curl -fsSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb \
+      && dpkg -i /tmp/debsuryorg-archive-keyring.deb >/dev/null || return 1
+    echo "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ $code main" > /etc/apt/sources.list.d/php.list
+  else
+    err "Repositório PHP extra só para Ubuntu/Debian"; return 1
+  fi
+  apt-get update -qq
+}
+
+install_lamp() {
+  title "Instalar LAMP"
+  has apt-get || { err "Apenas Ubuntu/Debian"; return 1; }
+  if is_aapanel; then
+    warn "aaPanel detectado: ele já gerencia Apache/MySQL/PHP (portas 80, 443, 3306)."
+    warn "Instalar o LAMP do sistema junto causa conflito de portas."
+    [[ ${LK_AUTO:-0} == 1 ]] && return 1
+    confirm "Continuar mesmo assim?" || return 1
+  fi
+  local o=1 v="" p
+  if [[ ${LK_AUTO:-0} != 1 ]]; then
+    echo "Versão do PHP:"
+    echo "  (1) Padrão do sistema   (2) 8.1   (3) 8.2   (4) 8.3   (5) 8.4"
+    o=$(ask "Escolha" 1)
+  fi
+  case $o in 2) v=8.1;; 3) v=8.2;; 4) v=8.3;; 5) v=8.4;; esac
+  info "Atualizando pacotes..."
+  apt-get update -qq
+  apt_i ca-certificates curl gnupg unzip >/dev/null
+  if [[ -n $v ]]; then add_php_repo || { err "Falha ao adicionar repositório do PHP $v"; return 1; }; fi
+  p="php${v}"
+  info "Instalando Apache, MariaDB e PHP ${v:-padrão}..."
+  apt_i apache2 mariadb-server mariadb-client \
+    "$p-fpm" "$p-cli" "$p-common" "$p-mysql" "$p-curl" "$p-gd" "$p-mbstring" "$p-xml" \
+    "$p-zip" "$p-bcmath" "$p-intl" "$p-readline" "$p-soap" "$p-sqlite3" \
+    || { err "Falha na instalação dos pacotes"; return 1; }
+  [[ -z $v ]] && v=$(php_default)
+
+  a2dismod "php$v" >/dev/null 2>&1; a2dismod mpm_prefork >/dev/null 2>&1
+  a2enmod mpm_event proxy_fcgi setenvif rewrite headers ssl expires >/dev/null
+  a2enconf "php$v-fpm" >/dev/null
+  echo "ServerName localhost" > /etc/apache2/conf-available/lk-servername.conf
+  cat > /etc/apache2/conf-available/lk-security.conf <<'EOF'
+ServerTokens Prod
+ServerSignature Off
+TraceEnable Off
+EOF
+  a2enconf lk-servername lk-security >/dev/null
+  cat > "/etc/php/$v/fpm/conf.d/99-lk.ini" <<'EOF'
+upload_max_filesize = 64M
+post_max_size = 64M
+memory_limit = 256M
+max_execution_time = 120
+expose_php = Off
+EOF
+  systemctl enable --now "php$v-fpm" mariadb apache2 >/dev/null 2>&1
+  systemctl restart "php$v-fpm" apache2
+  mysql -uroot -e "DROP USER IF EXISTS ''@'localhost'; DROP USER IF EXISTS ''@'$(hostname)'; DROP DATABASE IF EXISTS test; FLUSH PRIVILEGES;" >/dev/null 2>&1
+  if has ufw && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 80,443/tcp >/dev/null; fi
+  [[ -f $DEFAULT_ROOT/index.html ]] || create_default_page auto
+  ok "LAMP instalado (Apache + MariaDB + PHP $v)"
+  [[ ${LK_AUTO:-0} == 1 ]] && return 0
+  has composer || { confirm_yes "Instalar o Composer também?" && install_composer; }
+}
+
+# Instalação completa sem perguntas: LAMP (se faltar) + painel com senha temporária (trocada no 1º login)
+lk_setup() {
+  title "LkPanel - instalação completa"
+  has apt-get || { err "Apenas Ubuntu/Debian"; return 1; }
+  if [[ -f /var/www/lkmonitor/config.php ]]; then
+    ok "O painel já está instalado. Atualizando sem mudar porta, senha nem dados..."
+    bash "$LKM_INSTALLER" atualizar; return
+  fi
+  if ! has apache2 || ! ls /etc/php/*/fpm/pool.d >/dev/null 2>&1; then
+    info "Instalando Apache, PHP e MariaDB (pode levar alguns minutos)..."
+    LK_AUTO=1 install_lamp || { err "Falha ao instalar o LAMP"; return 1; }
+  fi
+  [[ -f $LKM_INSTALLER ]] || { err "Instalador do painel não encontrado em $LKM_INSTALLER. Rode o install-lk.sh mais recente."; return 1; }
+  if ! ssh_installed; then
+    info "Instalando o SSH (o root liga no 1º acesso ao painel)..."
+    apt_i openssh-server >/dev/null 2>&1 && systemctl enable --now "$(ssh_svc)" >/dev/null 2>&1 || warn "Não foi possível instalar o SSH agora (depois: sudo lk ssh)"
+  fi
+  has ufw && ufw status 2>/dev/null | grep -q "Status: active" && ufw allow "$(ssh_port)/tcp" >/dev/null 2>&1
+  LKM_AUTO=1 bash "$LKM_INSTALLER" instalar
+}
+
+install_composer() {
+  has php || { err "Instale o PHP primeiro (opção 1)"; return 1; }
+  info "Instalando Composer..."
+  curl -fsSL https://getcomposer.org/installer -o /tmp/composer-setup.php \
+    && php /tmp/composer-setup.php --quiet --install-dir=/usr/local/bin --filename=composer \
+    && rm -f /tmp/composer-setup.php \
+    && ok "$(COMPOSER_ALLOW_SUPERUSER=1 composer --version 2>/dev/null | head -n1)"
+}
+
+# --------------------------------------------------------------------- Node / PM2
+install_node() {
+  local v; v=$(ask "Versão do Node.js (20, 22, 24)" 22)
+  [[ $v =~ ^[0-9]+$ ]] || { err "Versão inválida"; return 1; }
+  apt_i curl ca-certificates gnupg >/dev/null
+  info "Instalando Node.js $v..."
+  curl -fsSL "https://deb.nodesource.com/setup_${v}.x" | bash - >/dev/null && apt_i nodejs >/dev/null \
+    && ok "Node.js $(node -v) instalado" || { err "Falha ao instalar Node.js"; return 1; }
+}
+
+install_pm2() {
+  title "Node.js + PM2"
+  if has node; then
+    info "Node.js já instalado: $(node -v)"
+    confirm "Trocar a versão do Node?" && { install_node || return 1; }
+  else
+    install_node || return 1
+  fi
+  info "Instalando PM2..."
+  npm install -g pm2 >/dev/null 2>&1 || { err "Falha ao instalar PM2"; return 1; }
+  pm2 startup systemd -u root --hp /root >/dev/null 2>&1
+  pm2 save >/dev/null 2>&1
+  ok "PM2 $(pm2 -v) instalado e configurado para iniciar no boot"
+}
+
+pm2_need() { has pm2 || { err "PM2 não instalado (opção 8)"; return 1; }; }
+
+pm2_start() {
+  pm2_need || return 1
+  title "Iniciar app no PM2"
+  echo "  (1) Arquivo JS (ex: /var/www/api/server.js)"
+  echo "  (2) Projeto npm (npm run <script>)"
+  echo "  (3) Comando livre"
+  local t name port file dir script cmd envp=()
+  t=$(ask "Tipo" 1)
+  name=$(ask "Nome do app")
+  [[ -n $name ]] || { err "Nome obrigatório"; return 1; }
+  port=$(ask "Porta (variável PORT) - vazio para não definir" "")
+  [[ -n $port ]] && envp=(env "PORT=$port")
+  case $t in
+    1) file=$(ask "Caminho do arquivo")
+       [[ -f $file ]] || { err "Arquivo não encontrado"; return 1; }
+       (cd "$(dirname "$file")" && "${envp[@]}" pm2 start "$file" --name "$name" --update-env);;
+    2) dir=$(ask "Pasta do projeto")
+       [[ -f $dir/package.json ]] || { err "package.json não encontrado em $dir"; return 1; }
+       script=$(ask "Script do npm" start)
+       (cd "$dir" && "${envp[@]}" pm2 start npm --name "$name" --update-env -- run "$script");;
+    3) dir=$(ask "Pasta de trabalho" "$PWD")
+       cmd=$(ask "Comando")
+       [[ -n $cmd ]] || { err "Comando vazio"; return 1; }
+       (cd "$dir" && "${envp[@]}" pm2 start bash --name "$name" --update-env -- -c "$cmd");;
+    *) err "Tipo inválido"; return 1;;
+  esac && pm2 save >/dev/null 2>&1 && ok "App '$name' iniciado e salvo no PM2"
+}
+
+pm2_manage() {
+  pm2_need || return 1
+  pm2 ls
+  local id a
+  id=$(ask "Nome ou ID do app (all = todos)")
+  [[ -n $id ]] || return 0
+  echo "  (1) Reiniciar  (2) Reload sem downtime  (3) Parar  (4) Iniciar  (5) Remover"
+  a=$(ask "Ação" 1)
+  case $a in
+    1) pm2 restart "$id" --update-env;;
+    2) pm2 reload "$id";;
+    3) pm2 stop "$id";;
+    4) pm2 start "$id";;
+    5) confirm "Remover '$id' do PM2?" && pm2 delete "$id";;
+    *) err "Ação inválida"; return 1;;
+  esac
+  pm2 save >/dev/null 2>&1
+}
+
+pm2_logs() {
+  pm2_need || return 1
+  local id m
+  id=$(ask "Nome ou ID do app (vazio = todos)" "")
+  m=$(ask "(1) Últimas 100 linhas  (2) Tempo real" 1)
+  if [[ $m == 2 ]]; then follow pm2 logs $id; else pm2 logs $id --lines 100 --nostream; fi
+}
+
+# --------------------------------------------------------------------- Supervisor
+sup_need() { has supervisorctl || { err "Supervisor não instalado (opção 13)"; return 1; }; }
+
+sup_install() {
+  if has supervisorctl; then info "Supervisor já instalado"
+  else info "Instalando Supervisor..."; apt_i supervisor >/dev/null || { err "Falha ao instalar"; return 1; }; fi
+  systemctl enable --now supervisor >/dev/null 2>&1
+  ok "Supervisor ativo ($(supervisorctl version 2>/dev/null))"
+}
+
+sup_conf_of() { # arquivo .conf que contém o programa
+  local base="${1%%:*}" f
+  for f in /etc/supervisor/conf.d/*.conf; do
+    [[ -f $f ]] && grep -q "^\[program:$base\]" "$f" && { echo "$f"; return 0; }
+  done
+  return 1
+}
+
+sup_create() {
+  sup_need || return 1
+  title "Criar worker no Supervisor"
+  local name t dir cmd user n=1 php extra conf defuser=www-data
+  name=$(ask "Nome do worker (ex: meusite-fila)")
+  [[ $name =~ ^[A-Za-z0-9_-]+$ ]] || { err "Nome inválido (use letras, números, - e _)"; return 1; }
+  conf="/etc/supervisor/conf.d/$name.conf"
+  { [[ -f $conf ]] || sup_conf_of "$name" >/dev/null; } && { err "Worker '$name' já existe"; return 1; }
+  echo "  (1) Laravel - queue:work"
+  echo "  (2) Laravel - schedule:work"
+  echo "  (3) Laravel - Horizon"
+  echo "  (4) Comando livre"
+  t=$(ask "Tipo" 1)
+  case $t in
+    1|2|3)
+      dir=$(ask "Pasta do projeto Laravel" "$WWW/"); dir="${dir%/}"
+      [[ -f $dir/artisan ]] || { err "artisan não encontrado em $dir"; return 1; }
+      php=$(pick_php_bin)
+      case $t in
+        1) extra=$(ask "Parâmetros extras (ex: --queue=high,default) - opcional" "")
+           cmd="$php $dir/artisan queue:work --sleep=3 --tries=3 --max-time=3600${extra:+ $extra}"
+           n=$(ask "Quantidade de processos" 1);;
+        2) cmd="$php $dir/artisan schedule:work";;
+        3) cmd="$php $dir/artisan horizon";;
+      esac;;
+    4) dir=$(ask "Pasta de trabalho" "/root")
+       cmd=$(ask "Comando completo")
+       [[ -n $cmd ]] || { err "Comando vazio"; return 1; }
+       n=$(ask "Quantidade de processos" 1)
+       defuser=root;;
+    *) err "Tipo inválido"; return 1;;
+  esac
+  [[ $n =~ ^[0-9]+$ ]] && ((n >= 1)) || n=1
+  user=$(ask "Rodar como usuário" "$defuser")
+  id "$user" >/dev/null 2>&1 || { err "Usuário $user não existe"; return 1; }
+  cat > "$conf" <<EOF
+; Worker $name - gerado por LK em $(date '+%F %T')
+[program:$name]
+process_name=%(program_name)s_%(process_num)02d
+command=$cmd
+directory=$dir
+user=$user
+numprocs=$n
+autostart=true
+autorestart=true
+stopasgroup=true
+killasgroup=true
+redirect_stderr=true
+stdout_logfile=/var/log/supervisor/$name.log
+stdout_logfile_maxbytes=20MB
+stdout_logfile_backups=3
+stopwaitsecs=3600
+EOF
+  supervisorctl reread >/dev/null; supervisorctl update >/dev/null
+  sleep 1; supervisorctl status "$name:*"
+  ok "Worker '$name' criado (log: /var/log/supervisor/$name.log)"
+}
+
+sup_manage() {
+  sup_need || return 1
+  title "Workers do Supervisor"
+  supervisorctl status; echo
+  local name a target f
+  name=$(ask "Nome do worker (all = todos)")
+  [[ -n $name ]] || return 0
+  target="$name:*"; [[ $name == all || $name == *:* ]] && target="$name"
+  echo "  (1) Reiniciar  (2) Parar  (3) Iniciar  (4) Ver log  (5) Remover worker"
+  a=$(ask "Ação" 1)
+  case $a in
+    1) supervisorctl restart "$target";;
+    2) supervisorctl stop "$target";;
+    3) supervisorctl start "$target";;
+    4) view_log "/var/log/supervisor/${name%%:*}.log";;
+    5) [[ $name == all ]] && { err "Informe um worker específico"; return 1; }
+       f=$(sup_conf_of "$name") || { err "Configuração de '$name' não encontrada"; return 1; }
+       confirm "Remover o worker '${name%%:*}' ($f)?" || return 1
+       supervisorctl stop "${name%%:*}:*" >/dev/null 2>&1
+       rm -f "$f"; supervisorctl reread >/dev/null; supervisorctl update >/dev/null
+       ok "Worker removido";;
+    *) err "Ação inválida"; return 1;;
+  esac
+}
+
+# --------------------------------------------------------------------- Firewall / IPs
+is_v6() { [[ $1 == *:* ]]; }
+valid_ip() {
+  local ip="$1" o
+  if [[ $ip =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})(/([0-9]{1,2}))?$ ]]; then
+    for o in 1 2 3 4; do ((10#${BASH_REMATCH[o]} <= 255)) || return 1; done
+    [[ -z ${BASH_REMATCH[6]} ]] || ((10#${BASH_REMATCH[6]} >= 1 && 10#${BASH_REMATCH[6]} <= 32)) || return 1
+    return 0
+  fi
+  [[ $ip == *:* && $ip =~ ^[0-9A-Fa-f:]+(/[0-9]{1,3})?$ ]]
+}
+
+blocked_count() { local c=0; [[ -f $LK_BLOCKLIST ]] && c=$(grep -cvE '^[[:space:]]*(#|$)' "$LK_BLOCKLIST"); echo "${c:-0}"; }
+is_blocked()    { [[ -f $LK_BLOCKLIST ]] && awk '{print $1}' "$LK_BLOCKLIST" | grep -qxF "$1"; }
+
+fw_init() {
+  has ipset    || apt_i ipset >/dev/null 2>&1    || { err "Não foi possível instalar ipset"; return 1; }
+  has iptables || apt_i iptables >/dev/null 2>&1 || { err "Não foi possível instalar iptables"; return 1; }
+  ipset -exist create lk_block4 hash:net family inet
+  ipset -exist create lk_block6 hash:net family inet6
+  iptables -C INPUT -m set --match-set lk_block4 src -j DROP 2>/dev/null \
+    || iptables -I INPUT 1 -m set --match-set lk_block4 src -j DROP
+  if has ip6tables; then
+    ip6tables -C INPUT -m set --match-set lk_block6 src -j DROP 2>/dev/null \
+      || ip6tables -I INPUT 1 -m set --match-set lk_block6 src -j DROP
+  fi
+  # containers Docker (Evolution API etc.)
+  if iptables -nL DOCKER-USER >/dev/null 2>&1; then
+    iptables -C DOCKER-USER -m set --match-set lk_block4 src -j DROP 2>/dev/null \
+      || iptables -I DOCKER-USER 1 -m set --match-set lk_block4 src -j DROP
+  fi
+}
+
+block_ip() {
+  local ip="${1:-}" reason="${2:-}" me set
+  [[ -z $ip ]] && ip=$(ask "IP ou faixa para bloquear (ex: 1.2.3.4 ou 1.2.3.0/24)")
+  valid_ip "$ip" || { err "IP inválido: $ip"; return 1; }
+  me=$(awk '{print $1}' <<< "${SSH_CLIENT:-}")
+  if [[ -n $me && $ip == "$me" ]]; then
+    warn "Esse é o SEU IP atual de SSH ($me)!"
+    confirm "Bloquear mesmo assim? Você vai perder o acesso" || return 1
+  fi
+  [[ -z $reason && -z $LK_CLI ]] && reason=$(ask "Motivo (opcional)" "")
+  fw_init || return 1
+  set=lk_block4; is_v6 "$ip" && set=lk_block6
+  ipset -exist add "$set" "$ip" || { err "Falha ao bloquear $ip"; return 1; }
+  is_blocked "$ip" || echo "$ip # $(date '+%F %T')${reason:+ - $reason}" >> "$LK_BLOCKLIST"
+  has conntrack && conntrack -D -s "${ip%%/*}" >/dev/null 2>&1
+  ok "IP $ip bloqueado"
+}
+
+list_blocked() {
+  title "IPs bloqueados"
+  if [[ $(blocked_count) -eq 0 ]]; then info "Nenhum IP bloqueado"; return 1; fi
+  grep -vE '^[[:space:]]*(#|$)' "$LK_BLOCKLIST" | nl -w3 -s') '
+}
+
+unblock_ip() {
+  local ip="${1:-}" set
+  if [[ -z $ip ]]; then
+    list_blocked || return 0
+    ip=$(ask "Número da lista ou IP para liberar")
+    if [[ $ip =~ ^[0-9]+$ ]]; then
+      ip=$(grep -vE '^[[:space:]]*(#|$)' "$LK_BLOCKLIST" | sed -n "${ip}p" | awk '{print $1}')
+    fi
+  fi
+  [[ -n $ip ]] || { err "Nada selecionado"; return 1; }
+  is_blocked "$ip" || warn "$ip não estava na lista do LK (tentando remover do firewall/fail2ban mesmo assim)"
+  set=lk_block4; is_v6 "$ip" && set=lk_block6
+  ipset -exist del "$set" "$ip" 2>/dev/null
+  if [[ -f $LK_BLOCKLIST ]]; then
+    awk -v ip="$ip" '$1 != ip' "$LK_BLOCKLIST" > "$LK_BLOCKLIST.tmp" && mv "$LK_BLOCKLIST.tmp" "$LK_BLOCKLIST"
+  fi
+  has fail2ban-client && fail2ban-client unban "$ip" >/dev/null 2>&1
+  ok "IP $ip liberado"
+}
+
+fw_restore() {
+  fw_init || return 1
+  ipset flush lk_block4; ipset flush lk_block6
+  local ip n=0
+  [[ -f $LK_BLOCKLIST ]] || return 0
+  while read -r ip _; do
+    [[ -z $ip || $ip == \#* ]] && continue
+    if is_v6 "$ip"; then ipset -exist add lk_block6 "$ip"; else ipset -exist add lk_block4 "$ip"; fi && ((n++))
+  done < "$LK_BLOCKLIST"
+  ok "$n IP(s) bloqueados restaurados no firewall"
+}
+
+ssh_attackers() {
+  title "Top IPs com falha de login SSH"
+  local src data me min ip cnt n=0
+  if [[ -r /var/log/auth.log ]]; then src=$(cat /var/log/auth.log /var/log/auth.log.1 2>/dev/null)
+  else src=$(journalctl -u ssh -u sshd --since "7 days ago" --no-pager 2>/dev/null); fi
+  data=$(grep -E "Failed password|Invalid user|authentication failure|Connection closed by authenticating user|maximum authentication attempts" <<< "$src" \
+         | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort | uniq -c | sort -rn | head -n 20)
+  [[ -n $data ]] || { ok "Nenhuma tentativa de invasão encontrada"; return 0; }
+  printf "  %-10s %s\n" "Tentativas" "IP"
+  while read -r cnt ip; do
+    if is_blocked "$ip"; then printf "  %-10s %s %s(bloqueado)%s\n" "$cnt" "$ip" "$D" "$N"
+    else printf "  %-10s %s\n" "$cnt" "$ip"; fi
+  done <<< "$data"
+  echo
+  min=$(ask "Bloquear todos com N ou mais tentativas (0 = não bloquear)" 0)
+  [[ $min =~ ^[0-9]+$ ]] && ((min > 0)) || return 0
+  me=$(awk '{print $1}' <<< "${SSH_CLIENT:-}")
+  while read -r cnt ip; do
+    ((cnt >= min)) || continue
+    [[ $ip == "$me" ]] && { warn "Pulando seu próprio IP $ip"; continue; }
+    is_blocked "$ip" && continue
+    block_ip "$ip" "ssh brute force ($cnt tentativas)" && ((n++))
+  done <<< "$data"
+  ok "$n IP(s) bloqueados"
+}
+
+ssh_port() { local p; p=$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}'); echo "${p:-22}"; }
+
+fw_menu() {
+  title "Firewall (UFW)"
+  if ! has ufw; then
+    warn "UFW não instalado"
+    confirm_yes "Instalar UFW?" || return 0
+    apt_i ufw >/dev/null || { err "Falha ao instalar UFW"; return 1; }
+  fi
+  ufw status verbose 2>/dev/null | head -n 30
+  echo
+  echo "  (1) Abrir porta     (2) Fechar porta     (3) Permitir IP (acesso total)"
+  echo "  (4) Ativar UFW      (5) Desativar UFW"
+  local o p ip sp ap
+  o=$(ask "Opção")
+  case $o in
+    1) p=$(ask "Porta (ex: 3000, 3000/tcp, 8000:8100/tcp)"); [[ -n $p ]] && ufw allow "$p" && ok "Porta $p aberta";;
+    2) p=$(ask "Porta a fechar"); [[ -n $p ]] && ufw delete allow "$p" && ok "Porta $p fechada";;
+    3) ip=$(ask "IP"); valid_ip "$ip" || { err "IP inválido"; return 1; }
+       ufw allow from "$ip" && ok "Acesso total liberado para $ip";;
+    4) sp=$(ssh_port)
+       ufw allow "$sp/tcp" >/dev/null && info "SSH (porta $sp) liberado"
+       if apache_svc >/dev/null || svc_has nginx; then ufw allow 80,443/tcp >/dev/null && info "HTTP/HTTPS liberados"; fi
+       if is_aapanel && [[ -f /www/server/panel/data/port.pl ]]; then
+         ap=$(tr -dc '0-9' < /www/server/panel/data/port.pl); [[ -n $ap ]] && ufw allow "$ap/tcp" >/dev/null && info "aaPanel (porta $ap) liberado"
+       fi
+       ufw --force enable && ok "UFW ativado";;
+    5) confirm "Desativar o firewall UFW?" && ufw disable;;
+    *) return 0;;
+  esac
+}
+
+# --------------------------------------------------------------------- Página default
+write_default_html() {
+  local f="$1" t m
+  t=$(html_esc "$2"); m=$(html_esc "$3")
+  cat > "$f" <<EOF
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>$t</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#e6e9f2;background:#0b1020;background-image:radial-gradient(circle at 20% 20%,#1b2550 0,transparent 45%),radial-gradient(circle at 80% 80%,#16324a 0,transparent 45%)}
+.card{text-align:center;padding:48px 40px;border:1px solid #232b4a;border-radius:18px;background:rgba(18,24,48,.75);max-width:520px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.45)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#22c55e;margin-right:8px;vertical-align:middle;animation:p 2s infinite}
+@keyframes p{0%{box-shadow:0 0 0 0 rgba(34,197,94,.7)}70%{box-shadow:0 0 0 12px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
+.status{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#86efac;margin-bottom:22px}
+h1{font-size:30px;font-weight:700;margin-bottom:12px}
+p{color:#9aa3bd;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="card">
+<div class="status"><span class="dot"></span>online</div>
+<h1>$t</h1>
+<p>$m</p>
+</div>
+</body>
+</html>
+EOF
+}
+
+write_default_vhost() {
+  local kind="$1" url="${2:-}" f="$APACHE_AV/000-default.conf"
+  [[ -f $f && ! -f $f.lk-bak ]] && cp "$f" "$f.lk-bak"
+  {
+    echo "# Site padrão do servidor - gerado por LK em $(date '+%F %T')"
+    echo "<VirtualHost *:80>"
+    echo "    ServerName default.localhost"
+    echo "    DocumentRoot $DEFAULT_ROOT"
+    case $kind in
+      html)
+        echo "    DirectoryIndex index.html index.php"
+        echo "    <Directory $DEFAULT_ROOT>"
+        echo "        Options -Indexes"
+        echo "        AllowOverride None"
+        echo "        Require all granted"
+        echo "    </Directory>";;
+      redirect)
+        echo "    Redirect 302 / $url";;
+      deny)
+        echo "    <Location />"
+        echo "        Require all denied"
+        echo "    </Location>";;
+    esac
+    echo "    ErrorLog \${APACHE_LOG_DIR}/default_error.log"
+    echo "    CustomLog \${APACHE_LOG_DIR}/default_access.log combined"
+    echo "</VirtualHost>"
+  } > "$f"
+}
+
+create_default_page() {
+  local mode="${1:-}" root="$DEFAULT_ROOT" apache=1 kind=1 t msg url
+  if [[ ! -d /etc/apache2 ]]; then
+    if is_aapanel && [[ -f /www/server/panel/vhost/apache/0.default.conf ]]; then
+      root=$(grep -m1 -i 'DocumentRoot' /www/server/panel/vhost/apache/0.default.conf | awk '{print $2}' | tr -d '"')
+      apache=0
+      info "aaPanel: a página default será gravada em $root"
+    else
+      need_apache; return 1
+    fi
+  fi
+  if [[ $mode != auto ]]; then
+    title "Página default do servidor"
+    echo "  (1) Página HTML personalizada"
+    [[ $apache == 1 ]] && echo "  (2) Redirecionar para uma URL" && echo "  (3) Bloquear (403) acessos por IP / domínio desconhecido"
+    kind=$(ask "Tipo" 1)
+  fi
+  case $kind in
+    1) if [[ $mode == auto ]]; then t=$(hostname); msg="Servidor online"
+       else t=$(ask "Título" "$(hostname)"); msg=$(ask "Mensagem" "Servidor online"); fi
+       mkdir -p "$root"; write_default_html "$root/index.html" "$t" "$msg"
+       [[ $apache == 1 ]] && write_default_vhost html;;
+    2) [[ $apache == 1 ]] || return 1
+       url=$(ask "URL de destino (https://...)")
+       [[ $url =~ ^https?:// ]] || { err "URL inválida"; return 1; }
+       mkdir -p "$root"; write_default_vhost redirect "$url";;
+    3) [[ $apache == 1 ]] || return 1
+       mkdir -p "$root"; write_default_vhost deny;;
+    *) err "Tipo inválido"; return 1;;
+  esac
+  if [[ $apache == 1 ]]; then
+    a2ensite 000-default >/dev/null 2>&1
+    apache_reload || return 1
+  fi
+  ok "Página default configurada (acesso pelo IP do servidor)"
+}
+
+# --------------------------------------------------------------------- Sites
+write_site_index() {
+  cat > "$1" <<EOF
+<!doctype html>
+<html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>$2</title>
+<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}div{text-align:center}small{color:#64748b}</style>
+</head><body><div><h1>$2</h1><p>Site no ar.</p><small>PHP <?= PHP_VERSION ?></small></div></body></html>
+EOF
+}
+
+site_add() {
+  need_apache || return 1
+  title "Criar site"
+  local d="${1:-}" alias="" t root docroot pv port body
+  [[ -z $d ]] && d=$(ask "Domínio (ex: meusite.com)")
+  d="${d,,}"; d="${d#http://}"; d="${d#https://}"; d="${d%%/*}"; d="${d#www.}"
+  [[ $d =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] || { err "Domínio inválido: $d"; return 1; }
+  [[ -f $APACHE_AV/$d.conf ]] && { err "O site $d já existe"; return 1; }
+  confirm_yes "Responder também em www.$d?" && alias="www.$d"
+  echo "Tipo de site:"
+  echo "  (1) PHP / HTML (pasta public_html)"
+  echo "  (2) Laravel (pasta public/)"
+  echo "  (3) Proxy reverso para app Node / PM2 (porta local)"
+  t=$(ask "Tipo" 1)
+  root="$WWW/$d"
+  case $t in
+    1|2)
+      pv=$(pick_php) || return 1
+      if [[ $t == 1 ]]; then
+        docroot="$root/public_html"; mkdir -p "$docroot"
+        [[ -e $docroot/index.php || -e $docroot/index.html ]] || write_site_index "$docroot/index.php" "$d"
+      else
+        docroot="$root/public"; mkdir -p "$root"
+      fi
+      body=$(cat <<EOF
+    DocumentRoot $docroot
+    <Directory $docroot>
+        Options -Indexes +FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+    <FilesMatch "\.php$">
+        SetHandler "proxy:unix:/run/php/php$pv-fpm.sock|fcgi://localhost"
+    </FilesMatch>
+EOF
+);;
+    3)
+      port=$(ask "Porta local do app (ex: 3000)")
+      [[ $port =~ ^[0-9]+$ ]] || { err "Porta inválida"; return 1; }
+      a2enmod proxy proxy_http proxy_wstunnel rewrite headers >/dev/null
+      docroot="$root"; mkdir -p "$root"
+      body=$(cat <<EOF
+    ProxyPreserveHost On
+    ProxyPass / http://127.0.0.1:$port/
+    ProxyPassReverse / http://127.0.0.1:$port/
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule /(.*) ws://127.0.0.1:$port/\$1 [P,L]
+EOF
+);;
+    *) err "Tipo inválido"; return 1;;
+  esac
+  {
+    echo "# Site $d - gerado por LK em $(date '+%F %T')"
+    echo "<VirtualHost *:80>"
+    echo "    ServerName $d"
+    [[ -n $alias ]] && echo "    ServerAlias $alias"
+    echo "$body"
+    echo "    ErrorLog \${APACHE_LOG_DIR}/${d}_error.log"
+    echo "    CustomLog \${APACHE_LOG_DIR}/${d}_access.log combined"
+    echo "</VirtualHost>"
+  } > "$APACHE_AV/$d.conf"
+  chown -R www-data:www-data "$root"
+  a2ensite "$d" >/dev/null
+  if ! apache_reload; then a2dissite "$d" >/dev/null 2>&1; err "Site não ativado"; return 1; fi
+  ok "Site http://$d criado -> $docroot"
+  [[ $t == 2 ]] && info "Coloque o projeto Laravel em $root (ex: git clone ... $root) e rode a opção 29 (permissões)."
+  if [[ $t != 3 ]] && has mysql && confirm "Criar banco de dados para este site?"; then db_create "${d//[^a-z0-9]/_}"; fi
+  confirm "Emitir SSL agora? (o DNS do domínio já precisa apontar para este servidor)" && ssl_issue "$d"
+}
+
+site_list() {
+  need_apache || return 1
+  title "Sites"
+  local f name en ssl path c1 c2 n=0
+  printf "  %-32s %-4s %-4s %s\n" "DOMÍNIO" "ON" "SSL" "PASTA / DESTINO"
+  for f in "$APACHE_AV"/*.conf; do
+    [[ -f $f ]] || continue
+    name=$(basename "$f" .conf)
+    [[ $name == 000-default || $name == default-ssl || $name == *-le-ssl || $name == lkmonitor ]] && continue
+    en="não"; c1=$R; [[ -e $APACHE_EN/$name.conf ]] && { en="sim"; c1=$G; }
+    ssl="-";  c2=$D; [[ -f $APACHE_AV/$name-le-ssl.conf ]] && { ssl="sim"; c2=$G; }
+    path=$(awk 'tolower($1)=="proxypass"{print $3; exit}' "$f")
+    [[ -z $path ]] && path=$(awk 'tolower($1)=="documentroot"{print $2; exit}' "$f")
+    printf "  %-32s %s%-4s%s %s%-4s%s %s\n" "$name" "$c1" "$en" "$N" "$c2" "$ssl" "$N" "$path"
+    ((n++))
+  done
+  ((n)) || info "Nenhum site criado ainda"
+}
+
+site_del() {
+  need_apache || return 1
+  local d="${1:-}" c
+  [[ -z $d ]] && { site_list; d=$(ask "Domínio para remover"); }
+  [[ -n $d && -f $APACHE_AV/$d.conf ]] || { err "Site não encontrado: $d"; return 1; }
+  confirm "Remover o site $d do Apache?" || return 1
+  a2dissite "$d" >/dev/null 2>&1
+  [[ -f $APACHE_AV/$d-le-ssl.conf ]] && a2dissite "$d-le-ssl" >/dev/null 2>&1
+  if has certbot && certbot certificates 2>/dev/null | grep -q "Certificate Name: $d\$"; then
+    certbot delete --cert-name "$d" --non-interactive >/dev/null 2>&1 && info "Certificado SSL removido"
+  fi
+  rm -f "$APACHE_AV/$d.conf" "$APACHE_AV/$d-le-ssl.conf"
+  apache_reload
+  if [[ -d $WWW/$d ]]; then
+    c=$(ask "Apagar também os arquivos em $WWW/$d? Digite o domínio para confirmar (vazio = manter)" "")
+    if [[ $c == "$d" ]]; then rm -rf "${WWW:?}/${d:?}"; ok "Arquivos apagados"; else info "Arquivos mantidos em $WWW/$d"; fi
+  fi
+  ok "Site $d removido"
+}
+
+site_is_on() { [[ -e $APACHE_EN/$1.conf ]]; }
+
+site_pick() { # escolhe um site pelo número ou nome
+  local list=() f n i o
+  for f in "$APACHE_AV"/*.conf; do
+    [[ -f $f ]] || continue
+    n=$(basename "$f" .conf)
+    [[ $n == 000-default || $n == default-ssl || $n == *-le-ssl || $n == lkmonitor ]] && continue
+    list+=("$n")
+  done
+  ((${#list[@]})) || { warn "Nenhum site criado ainda (use a opção 23)"; return 1; }
+  for i in "${!list[@]}"; do
+    if site_is_on "${list[i]}"; then printf "  (%d) %-32s %s● ligado%s\n" $((i+1)) "${list[i]}" "$G" "$N" >&2
+    else printf "  (%d) %-32s %s○ desligado%s\n" $((i+1)) "${list[i]}" "$R" "$N" >&2; fi
+  done
+  o=$(ask "Site (número ou nome)")
+  if [[ $o =~ ^[0-9]+$ ]] && ((o >= 1 && o <= ${#list[@]})); then echo "${list[o-1]}"; return 0; fi
+  [[ -n $o && -f $APACHE_AV/$o.conf ]] && { echo "$o"; return 0; }
+  err "Site inválido: $o"; return 1
+}
+
+site_enable() {
+  need_apache || return 1
+  local d="${1:-}"
+  [[ -n $d && -f $APACHE_AV/$d.conf ]] || { err "Site não encontrado: $d"; return 1; }
+  site_is_on "$d" && { info "$d já está ligado"; return 0; }
+  a2ensite "$d" >/dev/null 2>&1
+  [[ -f $APACHE_AV/$d-le-ssl.conf ]] && a2ensite "$d-le-ssl" >/dev/null 2>&1
+  if apache_reload; then ok "Site $d ligado"; else a2dissite "$d" >/dev/null 2>&1; err "Não foi possível ligar $d"; return 1; fi
+}
+
+site_disable() {
+  need_apache || return 1
+  local d="${1:-}"
+  [[ -n $d && -f $APACHE_AV/$d.conf ]] || { err "Site não encontrado: $d"; return 1; }
+  site_is_on "$d" || { info "$d já está desligado"; return 0; }
+  a2dissite "$d" >/dev/null 2>&1
+  [[ -f $APACHE_AV/$d-le-ssl.conf ]] && a2dissite "$d-le-ssl" >/dev/null 2>&1
+  apache_reload && ok "Site $d desligado (os arquivos continuam em $WWW/$d)"
+}
+
+site_toggle() {
+  need_apache || return 1
+  title "Ligar / desligar site"
+  local d; d=$(site_pick) || return 1
+  if site_is_on "$d"; then
+    confirm "Desligar $d?" && site_disable "$d"
+  else
+    site_enable "$d"
+  fi
+}
+
+ssl_issue() {
+  need_apache || return 1
+  local d="${1:-}" email doms
+  [[ -z $d ]] && { site_list; d=$(ask "Domínio"); }
+  [[ -f $APACHE_AV/$d.conf ]] || { err "Site $d não existe (crie na opção 23)"; return 1; }
+  if ! has certbot; then info "Instalando certbot..."; apt_i certbot python3-certbot-apache >/dev/null || { err "Falha ao instalar certbot"; return 1; }; fi
+  doms=(-d "$d")
+  grep -qiE "ServerAlias.*www\.$d" "$APACHE_AV/$d.conf" && doms+=(-d "www.$d")
+  email=$(ask "E-mail para o Let's Encrypt" "admin@$d")
+  certbot --apache "${doms[@]}" --non-interactive --agree-tos -m "$email" --redirect \
+    && ok "SSL ativo para $d (renovação automática pelo certbot)" \
+    || err "Falha ao emitir SSL. Confira se o DNS de $d aponta para este servidor e se a porta 80 está aberta."
+}
+
+ssl_menu() {
+  title "SSL grátis (Let's Encrypt)"
+  echo "  (1) Emitir SSL para um site  (2) Listar certificados  (3) Testar renovação automática"
+  case $(ask "Opção" 1) in
+    1) ssl_issue;;
+    2) has certbot && certbot certificates || warn "Certbot ainda não instalado";;
+    3) has certbot && certbot renew --dry-run || warn "Certbot ainda não instalado";;
+  esac
+}
+
+fix_perms() {
+  title "Corrigir permissões"
+  local p rp owner
+  p=$(ask "Pasta do site" "$WWW/"); p="${p%/}"
+  [[ -d $p ]] || { err "Pasta não existe"; return 1; }
+  rp=$(realpath "$p")
+  case "$rp" in /|/etc|/etc/*|/usr|/usr/*|/bin*|/sbin*|/boot*|/root|/var|/var/www|/home) err "Pasta protegida: $rp"; return 1;; esac
+  owner=$(ask "Dono" "www-data")
+  id "$owner" >/dev/null 2>&1 || { err "Usuário $owner não existe"; return 1; }
+  chown -R "$owner:$owner" "$rp"
+  find "$rp" -type d -not -path '*/node_modules/*' -exec chmod 755 {} +
+  find "$rp" -type f -not -path '*/node_modules/*' -not -path '*/vendor/bin/*' -exec chmod 644 {} +
+  if [[ -f $rp/artisan ]]; then
+    chmod -R ug+rwx "$rp/storage" "$rp/bootstrap/cache" 2>/dev/null
+    info "Laravel: storage/ e bootstrap/cache/ com permissão de escrita"
+  fi
+  ok "Permissões corrigidas em $rp"
+}
+
+# --------------------------------------------------------------------- Banco de dados
+mysql_auth() {
+  [[ -n ${MYSQL_ROOT_OK:-} ]] && return 0
+  has mysql || { err "MySQL/MariaDB não instalado"; return 1; }
+  if mysql -uroot -e "SELECT 1" >/dev/null 2>&1; then MYSQL_ROOT_OK=1; return 0; fi
+  local pw; read -rsp "Senha root do MySQL: " pw; echo >&2
+  if MYSQL_PWD="$pw" mysql -uroot -e "SELECT 1" >/dev/null 2>&1; then export MYSQL_PWD="$pw"; MYSQL_ROOT_OK=1; return 0; fi
+  err "Senha root incorreta"; return 1
+}
+mysql_q() { mysql_auth || return 1; mysql -uroot "$@"; }
+
+db_list() {
+  title "Bancos de dados"
+  mysql_q -N -e "SHOW DATABASES" | grep -vxE 'information_schema|performance_schema|mysql|sys' | sed 's/^/  - /'
+}
+
+db_create() {
+  mysql_auth || return 1
+  title "Criar banco de dados"
+  local db u p
+  db=$(ask "Nome do banco" "${1:-}")
+  [[ $db =~ ^[A-Za-z0-9_]{1,64}$ ]] || { err "Nome inválido (use letras, números e _)"; return 1; }
+  u=$(ask "Usuário" "${db:0:32}")
+  [[ $u =~ ^[A-Za-z0-9_]{1,32}$ ]] || { err "Usuário inválido"; return 1; }
+  p=$(ask "Senha (vazio = gerar automaticamente)" "")
+  [[ -z $p ]] && p=$(gen_pass)
+  [[ $p == *"'"* || $p == *\\* ]] && { err "A senha não pode ter aspas simples ou barra invertida"; return 1; }
+  mysql_q -e "CREATE DATABASE IF NOT EXISTS \`$db\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+              CREATE USER IF NOT EXISTS '$u'@'localhost' IDENTIFIED BY '$p';
+              ALTER USER '$u'@'localhost' IDENTIFIED BY '$p';
+              GRANT ALL PRIVILEGES ON \`$db\`.* TO '$u'@'localhost';
+              FLUSH PRIVILEGES;" || { err "Falha ao criar banco"; return 1; }
+  echo "$(date '+%F %T') | db=$db | user=$u | pass=$p | host=localhost" >> "$LK_DBFILE"
+  chmod 600 "$LK_DBFILE"
+  ok "Banco criado"
+  echo "  ${W}Banco:${N}   $db"
+  echo "  ${W}Usuário:${N} $u"
+  echo "  ${W}Senha:${N}   $p"
+  echo "  ${D}.env Laravel -> DB_DATABASE=$db  DB_USERNAME=$u  DB_PASSWORD=$p${N}"
+  echo "  ${D}Credenciais salvas em $LK_DBFILE${N}"
+}
+
+db_drop() {
+  mysql_auth || return 1
+  local db="${1:-}" c u f
+  db_list
+  [[ -z $db ]] && db=$(ask "Banco para remover")
+  [[ $db =~ ^[A-Za-z0-9_]{1,64}$ ]] || { err "Nome inválido"; return 1; }
+  case $db in mysql|information_schema|performance_schema|sys) err "Banco do sistema não pode ser removido"; return 1;; esac
+  c=$(ask "Digite '$db' novamente para confirmar")
+  [[ $c == "$db" ]] || { info "Cancelado"; return 1; }
+  if confirm_yes "Fazer backup antes (.sql.gz)?"; then
+    mkdir -p "$LK_BACKUPS"; f="$LK_BACKUPS/${db}_$(date +%Y%m%d_%H%M%S).sql.gz"
+    mysqldump -uroot --single-transaction --routines "$db" | gzip > "$f" && info "Backup: $f"
+  fi
+  mysql_q -e "DROP DATABASE \`$db\`;" && ok "Banco $db removido"
+  u=$(ask "Remover também o usuário (vazio = não)" "")
+  [[ -n $u && $u =~ ^[A-Za-z0-9_]+$ ]] && mysql_q -e "DROP USER IF EXISTS '$u'@'localhost';" && ok "Usuário $u removido"
+}
+
+# --------------------------------------------------------------------- Info / logs / manutenção
+server_info() {
+  title "Informações do servidor"
+  local pub
+  pub=$(curl -s4 --max-time 4 https://ifconfig.me 2>/dev/null)
+  printf "  %-14s %s\n" \
+    "Hostname"   "$(hostname)" \
+    "Sistema"    "$OS_NAME" \
+    "Kernel"     "$(uname -r)" \
+    "Uptime"     "$(uptime -p 2>/dev/null)" \
+    "CPU"        "$(nproc) núcleo(s) - $(awk -F: '/model name/{gsub(/^ +/,"",$2); print $2; exit}' /proc/cpuinfo)" \
+    "Load"       "$(cut -d' ' -f1-3 /proc/loadavg)" \
+    "RAM"        "$(free -h | awk '/^Mem:/{print $3" usados de "$2}')" \
+    "Swap"       "$(free -h | awk '/^Swap:/{print $3" usados de "$2}')" \
+    "Disco /"    "$(df -h / | awk 'NR==2{print $3" usados de "$2" ("$5")"}')" \
+    "IP público" "${pub:-?}" \
+    "IPs locais" "$(hostname -I 2>/dev/null)"
+  echo; echo "  ${W}Software${N}"
+  has apache2  && printf "  %-14s %s\n" "Apache"   "$(apache2 -v 2>/dev/null | awk -F'[/ ]' '/version/{print $4}')"
+  has php      && printf "  %-14s %s\n" "PHP (cli)" "$(php_default)"
+  [[ -n $(php_versions) ]] && printf "  %-14s %s\n" "PHP instalados" "$(php_versions | tr '\n' ' ')"
+  has mysql    && printf "  %-14s %s\n" "MySQL/MariaDB" "$(mysql -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-MariaDB)?' | head -n1)"
+  has node     && printf "  %-14s %s\n" "Node.js"  "$(node -v)"
+  has pm2      && printf "  %-14s %s\n" "PM2"      "$(pm2 -v 2>/dev/null)"
+  has composer && printf "  %-14s %s\n" "Composer" "$(COMPOSER_ALLOW_SUPERUSER=1 composer --version 2>/dev/null | awk '{print $3}')"
+  has supervisorctl && printf "  %-14s %s\n" "Supervisor" "$(supervisorctl version 2>/dev/null)"
+  is_aapanel   && printf "  %-14s %s\n" "aaPanel" "sim (/www/server/panel)"
+  printf "  %-14s %s\n" "LK" "v$LK_VERSION"
+}
+
+view_log() { # view_log arquivo
+  local f="$1" m
+  [[ -f $f ]] || { err "Log não encontrado: $f"; return 1; }
+  m=$(ask "(1) Últimas 100 linhas  (2) Tempo real" 1)
+  if [[ $m == 2 ]]; then follow tail -n 50 -f "$f"; else tail -n 100 "$f"; fi
+}
+view_journal() { # view_journal args...
+  local m; m=$(ask "(1) Últimas 100 linhas  (2) Tempo real" 1)
+  if [[ $m == 2 ]]; then follow journalctl -n 50 -f "$@"; else journalctl -n 100 --no-pager "$@"; fi
+}
+
+logs_menu() {
+  title "Logs"
+  echo "  (1) Apache - erros        (2) Apache - acessos      (3) Log de um site"
+  echo "  (4) MariaDB/MySQL         (5) PHP-FPM               (6) Sistema (journal)"
+  echo "  (7) Worker do Supervisor  (8) Auth / SSH            (9) Log do LK"
+  local o d f s
+  o=$(ask "Opção")
+  case $o in
+    1) view_log /var/log/apache2/error.log;;
+    2) view_log /var/log/apache2/access.log;;
+    3) d=$(ask "Domínio"); s=$(ask "(e) erros  (a) acessos" e)
+       if [[ $s == a ]]; then view_log "/var/log/apache2/${d}_access.log"; else view_log "/var/log/apache2/${d}_error.log"; fi;;
+    4) if [[ -f /var/log/mysql/error.log ]]; then view_log /var/log/mysql/error.log
+       else s=$(db_svc) && view_journal -u "$s"; fi;;
+    5) f=$(ls /var/log/php*-fpm.log 2>/dev/null | tail -n1)
+       if [[ -n $f ]]; then view_log "$f"; else s=$(fpm_services | head -n1); [[ -n $s ]] && view_journal -u "$s"; fi;;
+    6) view_journal;;
+    7) d=$(ask "Nome do worker"); view_log "/var/log/supervisor/$d.log";;
+    8) if [[ -f /var/log/auth.log ]]; then view_log /var/log/auth.log; else view_journal -u ssh -u sshd; fi;;
+    9) view_log "$LK_LOG";;
+  esac
+}
+
+sys_update() {
+  title "Atualizar sistema / limpar disco"
+  echo "  (1) Atualizar pacotes   (2) Limpar disco   (3) Ambos"
+  local o before after
+  o=$(ask "Opção" 3)
+  if [[ $o == 1 || $o == 3 ]]; then
+    info "Atualizando..."
+    apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confold upgrade \
+      && ok "Sistema atualizado"
+  fi
+  if [[ $o == 2 || $o == 3 ]]; then
+    before=$(df --output=used -k / | tail -n1)
+    apt-get -y autoremove >/dev/null 2>&1; apt-get -y autoclean >/dev/null 2>&1; apt-get clean
+    journalctl --vacuum-time=7d >/dev/null 2>&1
+    find /var/log -type f \( -name "*.gz" -o -regex '.*\.[0-9]+$' \) -mtime +14 -delete 2>/dev/null
+    after=$(df --output=used -k / | tail -n1)
+    ok "Espaço liberado: $(( (before - after) / 1024 )) MB"
+  fi
+  [[ -f /var/run/reboot-required ]] && warn "O sistema pede reinicialização (reboot)."
+}
+
+# --------------------------------------------------------------------- LK Monitor (painel web)
+lkm_port() { [[ -f $LKM_SITE ]] && grep -m1 -oE '^Listen [0-9]+' "$LKM_SITE" | awk '{print $2}'; }
+LKM_JOB="/usr/local/lib/lkmonitor/job.php"
+lkm_php() { local p; p=$(grep -oP "define\('LKM_PHP_CLI', '\K[^']*" /var/www/lkmonitor/config.php 2>/dev/null); [[ -n $p && -x $p ]] && echo "$p" || command -v php; }
+lkm_job() { # backups usam o executor de tarefas do LK Monitor
+  [[ -f $LKM_JOB ]] || { err "Backups precisam do LK Monitor instalado (sudo lk -> opção 33)."; return 1; }
+  "$(lkm_php)" -d memory_limit=512M "$LKM_JOB" "$@"
+}
+lkm_https_port() { [[ -f $LKM_SITE ]] && grep -m1 -oE '^Listen [0-9]+ https' "$LKM_SITE" | awk '{print $2}'; }
+
+lkm_urls() {
+  local port sport ip; port=$(lkm_port); sport=$(lkm_https_port)
+  [[ -n $port ]] || return 1
+  echo "  http://localhost:$port"
+  for ip in $(hostname -I 2>/dev/null); do
+    [[ $ip == *:* || $ip == 172.17.* || $ip == 192.168.122.* ]] && continue
+    echo "  http://$ip:$port"
+    [[ -n $sport ]] && echo "  https://$ip:$sport  ${D}(app no celular)${N}"
+  done
+  return 0
+}
+
+lkm_run() {
+  [[ -f $LKM_INSTALLER ]] || { err "Instalador do LK Monitor não encontrado em $LKM_INSTALLER. Rode o install-lk.sh mais recente."; return 1; }
+  bash "$LKM_INSTALLER" "$@"
+}
+
+monitor_menu() {
+  title "LK Monitor (painel web: uso, histórico, sites, arquivos e terminal completo)"
+  local port; port=$(lkm_port)
+  if [[ -n $port ]]; then
+    echo "  Status: ${G}instalado${N} na porta $port$([[ -n $(lkm_https_port) ]] && echo " (HTTPS na $(lkm_https_port))")"
+    if systemctl is-active --quiet lkmonitor-collect.timer 2>/dev/null; then echo "  Histórico: ${G}coletando${N} a cada minuto (7 dias)"
+    else echo "  Histórico: ${Y}parado${N} (use a opção 1 para atualizar)"; fi
+    if systemctl is-active --quiet lkmonitor-term 2>/dev/null; then echo "  Terminal:  ${G}completo${N} (nano, htop, o menu do lk...)"
+    elif [[ -f /etc/systemd/system/lkmonitor-term.service ]]; then echo "  Terminal:  ${Y}serviço parado${N} (opção 4 reinicia; log: journalctl -u lkmonitor-term)"
+    else echo "  Terminal:  simples (use a opção 1 para atualizar e ter o terminal completo)"; fi
+    lkm_urls
+  else
+    echo "  Status: ${Y}não instalado${N}"
+  fi
+  echo
+  echo "  (1) Instalar / atualizar        (2) Mostrar endereços"
+  echo "  (3) Trocar senha do painel      (4) Reiniciar painel"
+  echo "  (5) Histórico de ações          (6) Remover painel"
+  local o; o=$(ask "Opção" "$([[ -n $port ]] && echo 2 || echo 1)")
+  case $o in
+    1) lkm_run;;
+    2) lkm_urls || warn "Painel não instalado (use a opção 1)";;
+    3) [[ -n $port ]] || { warn "Painel não instalado"; return 1; }; lkm_run senha;;
+    4) [[ -n $port ]] || { warn "Painel não instalado"; return 1; }
+       local s; for s in $(fpm_services); do systemctl restart "$s"; done
+       systemctl restart lkmonitor-collect.timer 2>/dev/null
+       apache_reload && ok "Painel reiniciado"
+       if [[ -f /etc/systemd/system/lkmonitor-term.service ]]; then
+         if grep -q 'lkmonitor-term' /proc/$$/cgroup 2>/dev/null; then
+           warn "Você está no terminal do painel: ele reinicia em 5 s e reconecta sozinho."
+           systemd-run --quiet --on-active=5 /bin/systemctl restart lkmonitor-term.service >/dev/null 2>&1
+         else
+           systemctl restart lkmonitor-term.service && ok "Terminal do painel reiniciado"
+         fi
+       fi;;
+    5) if [[ -f /var/lib/lkmonitor/cmd.log ]]; then tail -n 40 /var/lib/lkmonitor/cmd.log; else info "Nenhuma ação registrada"; fi;;
+    6) [[ -n $port ]] || { warn "Painel não instalado"; return 1; }
+       confirm "Remover o LK Monitor?" && lkm_run uninstall;;
+    *) return 0;;
+  esac
+}
+
+# --------------------------------------------------------------------- SSH
+SSH_DROP="/etc/ssh/sshd_config.d"
+
+ssh_installed() { svc_has ssh || svc_has sshd; }
+ssh_svc() { svc_has ssh && echo ssh || echo sshd; }
+ssh_root_mode() { sshd -T 2>/dev/null | awk '/^permitrootlogin /{print $2; exit}'; }
+
+ssh_apply() { # valida e reinicia
+  local out
+  if ! out=$(sshd -t 2>&1); then err "Configuração do SSH inválida, nada foi aplicado:"; echo "$out"; return 1; fi
+  systemctl daemon-reload
+  systemctl is-enabled ssh.socket >/dev/null 2>&1 && systemctl restart ssh.socket
+  systemctl restart "$(ssh_svc)" && ok "SSH reiniciado"
+}
+
+ssh_status() {
+  if ! ssh_installed; then echo "  Status: ${Y}servidor SSH não instalado${N}"; return 1; fi
+  local st port root ip
+  st=$(systemctl is-active "$(ssh_svc)" 2>/dev/null)
+  systemctl is-active ssh.socket >/dev/null 2>&1 && st="active (socket)"
+  port=$(ssh_port); root=$(ssh_root_mode)
+  echo "  Status:      $([[ $st == active* ]] && echo "${G}$st${N}" || echo "${R}${st:-parado}${N}")"
+  echo "  Porta:       $port"
+  case $root in
+    yes) echo "  Login root:  ${Y}permitido com senha${N}";;
+    prohibit-password|without-password) echo "  Login root:  só com chave SSH";;
+    no) echo "  Login root:  bloqueado";;
+    *) echo "  Login root:  ${root:-?}";;
+  esac
+  echo "  Conectar:"
+  for ip in $(hostname -I 2>/dev/null); do
+    [[ $ip == *:* || $ip == 172.17.* || $ip == 192.168.122.* ]] && continue
+    if [[ $port == 22 ]]; then echo "    ssh root@$ip"; else echo "    ssh -p $port root@$ip"; fi
+  done
+}
+
+ssh_menu() {
+  title "SSH (acesso remoto pelo terminal)"
+  ssh_status; echo
+  echo "  (1) Instalar / ativar SSH          (2) Permitir login root com senha"
+  echo "  (3) Bloquear login root            (4) Trocar porta do SSH"
+  echo "  (5) Reiniciar SSH                  (6) Quem está conectado"
+  echo "  (7) Desativar SSH"
+  local o p me; o=$(ask "Opção" "$(ssh_installed && echo 6 || echo 1)")
+  me=$(awk '{print $1}' <<< "${SSH_CLIENT:-}")
+  case $o in
+    1) if ! ssh_installed; then info "Instalando openssh-server..."; apt_i openssh-server >/dev/null || { err "Falha ao instalar"; return 1; }; fi
+       systemctl enable --now "$(ssh_svc)" >/dev/null 2>&1
+       if has ufw && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow "$(ssh_port)/tcp" >/dev/null; fi
+       ok "SSH ativo"; ssh_status;;
+    2) ssh_installed || { err "Instale o SSH primeiro (opção 1)"; return 1; }
+       if ! grep -q '^root:[$]' /etc/shadow 2>/dev/null; then
+         warn "O root ainda não tem senha. Crie agora:"
+         passwd root || return 1
+       fi
+       mkdir -p "$SSH_DROP"; echo "PermitRootLogin yes" > "$SSH_DROP/10-root.conf"
+       ssh_apply && ok "Login root com senha permitido";;
+    3) ssh_installed || { err "Instale o SSH primeiro (opção 1)"; return 1; }
+       [[ -n $me ]] && [[ $(id -u) -eq 0 && -z ${SUDO_USER:-} ]] && warn "Você está conectado como root por SSH. A sessão atual continua, mas novas conexões como root serão recusadas."
+       confirm "Bloquear login do root pelo SSH?" || return 0
+       mkdir -p "$SSH_DROP"; echo "PermitRootLogin no" > "$SSH_DROP/10-root.conf"
+       ssh_apply && ok "Login root bloqueado (entre com seu usuário e use sudo)";;
+    4) ssh_installed || { err "Instale o SSH primeiro (opção 1)"; return 1; }
+       p=$(ask "Nova porta (1024-65535, ou 22)" "$(ssh_port)")
+       [[ $p =~ ^[0-9]+$ ]] && { ((p == 22)) || ((p >= 1024 && p <= 65535)); } || { err "Porta inválida"; return 1; }
+       if [[ $p != "$(ssh_port)" ]] && ss -ltnH "sport = :$p" 2>/dev/null | grep -q .; then err "A porta $p já está em uso"; return 1; fi
+       if has ufw && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow "$p/tcp" >/dev/null && info "Porta $p liberada no UFW"; fi
+       mkdir -p "$SSH_DROP"; echo "Port $p" > "$SSH_DROP/20-lk-port.conf"
+       ssh_apply && ok "SSH agora na porta $p. Conecte com: ssh -p $p usuario@IP"
+       [[ -n $me ]] && warn "Teste a nova porta em outra janela antes de fechar esta.";;
+    5) ssh_installed && ssh_apply;;
+    6) who; echo; ss -tnp state established "( sport = :$(ssh_port) )" 2>/dev/null | tail -n +2 | awk '{print "  conexão de " $4}';;
+    7) ssh_installed || return 0
+       [[ -n $me ]] && warn "Você está conectado por SSH agora! Ao desativar, novas conexões não serão aceitas."
+       confirm "Desativar o servidor SSH?" || return 0
+       systemctl disable --now ssh.socket >/dev/null 2>&1
+       systemctl disable --now "$(ssh_svc)" >/dev/null 2>&1 && ok "SSH desativado";;
+    *) return 0;;
+  esac
+}
+
+# --------------------------------------------------------------------- Modo servidor (tela / desktop)
+GRUB_DEF="/etc/default/grub"
+LID_CONF="/etc/systemd/logind.conf.d/lk-tampa.conf"
+SLEEP_TARGETS="sleep.target suspend.target hibernate.target hybrid-sleep.target"
+
+cpu_temp() {
+  local t max=0 f
+  for f in /sys/class/thermal/thermal_zone*/temp /sys/class/hwmon/hwmon*/temp*_input; do
+    [[ -r $f ]] || continue
+    t=$(<"$f"); [[ $t =~ ^[0-9]+$ ]] && ((t < 150000 && t > max)) && max=$t
+  done
+  ((max)) && echo "$((max / 1000)) °C" || echo "sem sensor"
+}
+
+grub_has()    { [[ -f $GRUB_DEF ]] && grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=.*$1" "$GRUB_DEF"; }
+grub_add() {
+  [[ -f $GRUB_DEF ]] || { warn "$GRUB_DEF não encontrado"; return 1; }
+  grub_has "$1" && return 0
+  if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GRUB_DEF"; then
+    sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"/&$1 /" "$GRUB_DEF"
+  else
+    echo "GRUB_CMDLINE_LINUX_DEFAULT=\"$1\"" >> "$GRUB_DEF"
+  fi
+}
+grub_del() { [[ -f $GRUB_DEF ]] && sed -i -E "/^GRUB_CMDLINE_LINUX_DEFAULT=/ s/ ?$1//g; /^GRUB_CMDLINE_LINUX_DEFAULT=/ s/=\" /=\"/" "$GRUB_DEF"; }
+grub_update() {
+  if has update-grub; then update-grub >/dev/null 2>&1 && return 0
+  elif has grub-mkconfig; then grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 && return 0; fi
+  warn "Não foi possível atualizar o GRUB (vale no próximo update-grub)"; return 1
+}
+
+screen_off() {
+  local f n=0
+  for f in /sys/class/graphics/fb*/blank; do [[ -w $f ]] && echo 1 > "$f" 2>/dev/null && ((n++)); done
+  for f in /sys/class/backlight/*/bl_power; do [[ -w $f ]] && echo 4 > "$f" 2>/dev/null && ((n++)); done
+  ((n)) && ok "Tela apagada (aperte uma tecla no notebook ou use 'lk tela on' para acender)" || warn "Não encontrei a tela para apagar"
+}
+screen_on() {
+  local f
+  for f in /sys/class/backlight/*/bl_power; do [[ -w $f ]] && echo 0 > "$f" 2>/dev/null; done
+  for f in /sys/class/graphics/fb*/blank; do [[ -w $f ]] && echo 0 > "$f" 2>/dev/null; done
+  ok "Tela acesa"
+}
+
+server_mode_status() {
+  local def cur
+  def=$(systemctl get-default 2>/dev/null)
+  if systemctl is-active graphical.target >/dev/null 2>&1; then cur="área de trabalho ligada"; else cur="sem área de trabalho"; fi
+  echo "  Modo:            $([[ $def == multi-user.target ]] && echo "${G}servidor${N}" || echo "${Y}normal (área de trabalho)${N}")  ·  agora: $cur"
+  echo "  Apagar tela:     $(grub_has consoleblank= && echo "após 1 min sem uso" || { grub_has 'video=eDP-1:d' && echo "sempre desligada" || echo "não"; })"
+  echo "  Suspender:       $(systemctl is-enabled suspend.target 2>/dev/null | grep -q masked && echo "bloqueado" || echo "permitido")"
+  echo "  Fechar a tampa:  $([[ -f $LID_CONF || -f ${LID_CONF%/*}/tampa.conf ]] && echo "continua ligado" || echo "padrão do sistema (pode suspender)")"
+  echo "  Temperatura:     $(cpu_temp)"
+  has powerprofilesctl && echo "  Energia:         $(powerprofilesctl get 2>/dev/null)"
+}
+
+server_mode_on() {
+  title "Ativando modo servidor"
+  systemctl set-default multi-user.target >/dev/null 2>&1 && ok "Área de trabalho desligada no boot"
+  grub_del 'video=eDP-1:d'; grub_add consoleblank=60 && grub_update && ok "Tela apaga sozinha após 1 minuto"
+  mkdir -p "$(dirname "$LID_CONF")"
+  rm -f "${LID_CONF%/*}/tampa.conf"
+  printf '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\nHandleLidSwitchDocked=ignore\n' > "$LID_CONF"
+  ok "Fechar a tampa não suspende"
+  systemctl mask $SLEEP_TARGETS >/dev/null 2>&1 && ok "Suspensão e hibernação bloqueadas"
+  if ! has thermald; then info "Instalando thermald..."; apt_i thermald >/dev/null 2>&1; fi
+  systemctl enable --now thermald >/dev/null 2>&1 && ok "Controle de temperatura (thermald) ativo"
+  has powerprofilesctl && powerprofilesctl set power-saver 2>/dev/null && ok "Perfil de energia: economia"
+  echo
+  echo "  (1) Desligar a área de trabalho agora (sem reiniciar)"
+  echo "  (2) Reiniciar agora"
+  echo "  (3) Deixar para o próximo boot"
+  case ${LK_SM_NOW:-$(ask "Opção" 1)} in
+    1) info "Desligando a área de trabalho..."; systemctl isolate multi-user.target && ok "Modo servidor ativo";;
+    2) info "Reiniciando..."; sleep 1; systemctl reboot;;
+    *) info "Vale no próximo boot";;
+  esac
+}
+
+server_mode_off() {
+  title "Voltando ao modo normal"
+  systemctl set-default graphical.target >/dev/null 2>&1 && ok "Área de trabalho volta a ligar no boot"
+  grub_del consoleblank=60; grub_del 'video=eDP-1:d'; grub_update && ok "Tela volta ao normal"
+  rm -f "$LID_CONF" "${LID_CONF%/*}/tampa.conf"; ok "Tampa volta ao padrão do sistema"
+  systemctl unmask $SLEEP_TARGETS >/dev/null 2>&1 && ok "Suspensão liberada"
+  has powerprofilesctl && powerprofilesctl set balanced 2>/dev/null && ok "Perfil de energia: equilibrado"
+  screen_on >/dev/null
+  echo
+  echo "  (1) Ligar a área de trabalho agora (sem reiniciar)"
+  echo "  (2) Reiniciar agora"
+  echo "  (3) Deixar para o próximo boot"
+  case ${LK_SM_NOW:-$(ask "Opção" 1)} in
+    1) info "Ligando a área de trabalho..."; systemctl isolate graphical.target && ok "Área de trabalho ligada";;
+    2) info "Reiniciando..."; sleep 1; systemctl reboot;;
+    *) info "Vale no próximo boot";;
+  esac
+}
+
+# lk servidor on|off [agora|reiniciar|boot]: sem a 3ª palavra, pergunta (usado pelo LK Monitor)
+sm_when() { case "$1" in agora|now) echo 1;; reiniciar|reboot) echo 2;; boot|depois) echo 3;; esac; }
+
+server_mode_menu() {
+  title "Modo servidor (tela, área de trabalho e energia)"
+  server_mode_status; echo
+  echo "  (1) Ativar modo servidor (apaga tela, sem área de trabalho, não dorme)"
+  echo "  (2) Voltar ao normal (como era antes)"
+  echo "  (3) Apagar a tela agora                (4) Acender a tela agora"
+  case $(ask "Opção" 0) in
+    1) server_mode_on;;
+    2) server_mode_off;;
+    3) screen_off;;
+    4) screen_on;;
+    *) return 0;;
+  esac
+}
+
+# --------------------------------------------------------------------- Menu
+# --------------------------------------------------------------------- Bot do WhatsApp (Guardião LK)
+# LK-BOT-PATCH: já vem no lk desde a 2.2.0 (o lk-bot-patch.sh antigo pula esta parte)
+WA_INSTALLER="/usr/local/share/lk/install-whatsapp.sh"
+LKG_CONF=/etc/lk-guard.conf
+wa_run() {
+  [[ -f $WA_INSTALLER ]] || { err "Instalador do WhatsApp não encontrado em $WA_INSTALLER. Rode o install-lk.sh mais recente."; return 1; }
+  bash "$WA_INSTALLER" "$@"
+}
+bot_is_on() { [[ "$(grep -m1 '^BOT=' "$LKG_CONF" 2>/dev/null | cut -d= -f2 | tr -d "\"' ")" != 0 ]]; }
+bot_status() {
+  [[ -f $LKG_CONF ]] || { warn "Bot do WhatsApp não instalado: painel › App Store › WhatsApp + Bot"; return 1; }
+  if bot_is_on; then ok "Bot do WhatsApp: LIGADO (manda avisos e responde comandos)"
+  else warn "Bot do WhatsApp: DESLIGADO (mudo; o desligamento automático por temperatura continua)"; fi
+  info "Serviço lk-guard: $(systemctl is-active lk-guard 2>/dev/null) · WhatsApp (gowa): $(systemctl is-active gowa 2>/dev/null)"
+  info "Números: $(grep -m1 '^NUMBERS=' "$LKG_CONF" | cut -d= -f2 | sed 's/^$/nenhum (sudo lk whatsapp guardiao)/')"
+}
+bot_set() {
+  [[ -f $LKG_CONF ]] || { err "Bot do WhatsApp não instalado: painel › App Store › WhatsApp + Bot"; return 1; }
+  if grep -q '^BOT=' "$LKG_CONF"; then sed -i "s/^BOT=.*/BOT=$1/" "$LKG_CONF"
+  else printf '# Bot do WhatsApp: 1 = manda avisos e responde comandos, 0 = mudo\nBOT=%s\n' "$1" >> "$LKG_CONF"; fi
+  log "Bot WhatsApp: BOT=$1"
+  bot_status
+}
+bot_menu() {
+  title "Bot do WhatsApp (Guardião LK)"
+  if ! bot_status; then
+    info "Instale pelo painel: App Store › WhatsApp + Bot (ou no terminal: sudo lk whatsapp)"
+    return 0
+  fi
+  echo
+  echo "  (1) Ligar bot                        (2) Desligar bot (para de mandar mensagens)"
+  echo "  (3) Números que recebem os avisos    (4) Endereço da página / dados"
+  echo "  (5) Trocar senha da página           (6) Atualizar o WhatsApp"
+  echo "  (7) Mandar mensagem de teste         (0) Voltar"
+  case "$(ask "Opção" 0)" in
+    1) bot_set 1;;
+    2) bot_set 0;;
+    3) wa_run guardiao;;
+    4) wa_run info;;
+    5) wa_run senha;;
+    6) wa_run;;
+    7) php /opt/lk-guard/guard.php teste;;
+    *) return 0;;
+  esac
+}
+
+MENU_L=(
+  "(1)  Instalar LAMP (Apache+MariaDB+PHP)"
+  "(2)  Reiniciar Apache"
+  "(3)  Reiniciar MariaDB/MySQL"
+  "(4)  Reiniciar PHP-FPM"
+  "(5)  Reiniciar todo o LAMP"
+  "(6)  Gerenciar serviço (start/stop/boot)"
+  "(7)  Status dos serviços"
+  "(8)  Instalar Node.js + PM2"
+  "(9)  PM2: listar apps"
+  "(10) PM2: iniciar novo app"
+  "(11) PM2: reiniciar/parar/remover app"
+  "(12) PM2: ver logs"
+  "(13) Instalar Supervisor"
+  "(14) Supervisor: criar worker"
+  "(15) Supervisor: gerenciar workers"
+  "(16) Instalar Composer"
+  "(33) Painel web LK Monitor"
+  "(35) Modo servidor (apagar tela)"
+)
+MENU_R=(
+  "(17) Bloquear IP"
+  "(18) Liberar IP"
+  "(19) Listar IPs bloqueados"
+  "(20) Top IPs atacando o SSH"
+  "(21) Firewall (portas / UFW)"
+  "(22) Criar página default do servidor"
+  "(23) Criar site (VirtualHost)"
+  "(24) Remover site"
+  "(25) Listar sites"
+  "(26) SSL grátis (Let's Encrypt)"
+  "(27) Criar banco de dados + usuário"
+  "(28) Remover banco de dados"
+  "(29) Corrigir permissões de site"
+  "(30) Informações do servidor"
+  "(31) Ver logs"
+  "(32) Atualizar sistema / limpar disco"
+  "(34) SSH: ativar / root / porta"
+  "(36) Ligar / desligar site"
+)
+
+show_menu() {
+  clear 2>/dev/null
+  local i ip line all=() item k
+  # (37) só aparece depois de instalar o WhatsApp + Bot (App Store do painel), já com o estado do bot
+  local extra=()
+  [[ -f $LKG_CONF ]] && extra+=("(37) Bot WhatsApp: $(bot_is_on && echo "${G}LIGADO${N}" || echo "${Y}desligado${N}")")
+  # todas as opções em ordem de número: metade na esquerda (1, 2, 3...) e o resto na direita
+  for k in $(seq 1 99); do
+    for item in "${MENU_L[@]}" "${MENU_R[@]}" "${extra[@]}"; do
+      [[ $item == "($k)"* ]] && { all+=("$item"); break; }
+    done
+  done
+  local n=$(( (${#all[@]} + 1) / 2 ))
+  ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  line="================================================================================"
+  echo "${C}=============================== ${W}LK Hosting CLI${N}${C} ================================${N}"
+  echo "${D} $(hostname) | $ip | $OS_NAME | v$LK_VERSION${N}"
+  is_aapanel && echo "${Y} aaPanel detectado em /www/server/panel${N}"
+  echo "${C}${line}${N}"
+  local LC_ALL=C.UTF-8 l vis
+  for ((i = 0; i < n; i++)); do
+    l="${all[i]}"
+    vis=$(sed 's/\x1b\[[0-9;]*m//g' <<< "$l")
+    printf "%s%*s %s\n" "$l" $((42 - ${#vis})) "" "${all[i + n]:-}"
+  done
+  echo "(0)  Sair"
+  echo "${C}${line}${N}"
+}
+
+main_menu() {
+  LK_CLI=""
+  local op
+  while true; do
+    show_menu
+    read -rp "Digite o número do comando: " op || exit 0
+    case "$op" in
+      1) install_lamp;;      2) restart_apache;;   3) restart_db;;        4) restart_php;;
+      5) restart_lamp;;      6) svc_manage;;       7) show_status;;       8) install_pm2;;
+      9) pm2_need && pm2 ls;; 10) pm2_start;;      11) pm2_manage;;       12) pm2_logs;;
+      13) sup_install;;      14) sup_create;;      15) sup_manage;;       16) install_composer;;
+      17) block_ip;;         18) unblock_ip;;      19) list_blocked;;     20) ssh_attackers;;
+      21) fw_menu;;          22) create_default_page;; 23) site_add;;     24) site_del;;
+      25) site_list;;        26) ssl_menu;;        27) db_create;;        28) db_drop;;
+      29) fix_perms;;        30) server_info;;     31) logs_menu;;        32) sys_update;;
+      33) monitor_menu;;     34) ssh_menu;;         35) server_mode_menu;;
+      36) site_toggle;;      37) bot_menu;;
+      0|q|Q|sair|exit) echo "Até mais!"; exit 0;;
+      "") continue;;
+      *) warn "Opção inválida"; sleep 1; continue;;
+    esac
+    pause
+  done
+}
+
+usage() {
+  cat <<EOF
+${W}LK Hosting CLI v$LK_VERSION${N}
+
+  lk                         abre o menu
+  lk status                  status dos serviços
+  lk info                    informações do servidor
+  lk restart [apache|mysql|php|all|supervisor|pm2|<serviço>]
+  lk block <ip> [motivo]     bloqueia IP ou faixa (1.2.3.0/24)
+  lk unblock <ip>            libera IP
+  lk blocked                 lista IPs bloqueados
+  lk site add <domínio>      cria site
+  lk site del <domínio>      remove site
+  lk site on <domínio>       liga o site
+  lk site off <domínio>      desliga o site (mantém os arquivos)
+  lk sites                   lista sites
+  lk ssl <domínio>           emite SSL Let's Encrypt
+  lk db add [nome]           cria banco + usuário
+  lk db del [nome]           remove banco
+  lk db list                 lista bancos
+  lk backup <site>|all       backup do site (arquivos + banco) em /var/backups/lkmonitor
+  lk backups [site]          lista os backups
+  lk restore <site> <arq>    restaura um backup (faz antes um backup de segurança)
+  lk lamp                    instala LAMP
+  lk default-page            configura a página default do servidor
+  lk monitor                 painel web (LK Monitor)
+  lk ssh                     status e opções do SSH
+  lk servidor [on|off] [agora|reiniciar|boot]
+                             modo servidor (sem área de trabalho, tela apagada)
+  lk tela [off|on]           apagar / acender a tela agora
+  lk bot [on|off|teste]      liga / desliga o bot do WhatsApp (Guardião LK)
+  lk whatsapp [instalar|info|guardiao|senha|remover]
+                             WhatsApp no servidor: instala, números do bot, página do QR code
+  lk temp                    temperatura da CPU
+  lk 2fa [off]               status / desliga o login com 2 fatores do painel (perdeu o celular)
+  lk setup                   instala tudo sem perguntas (LAMP + painel, senha temporária)
+  lk senha                   nova senha do painel (Enter = temporária, trocada no 1º login)
+  lk version                 versão
+EOF
+}
+
+cli() {
+  LK_CLI=1
+  case "$1" in
+    help|-h|--help) usage;;
+    version|-v|--version) echo "LK v$LK_VERSION";;
+    menu) main_menu;;
+    status) show_status;;
+    info) server_info;;
+    restart)
+      case "${2:-all}" in
+        apache|apache2|httpd) restart_apache;;
+        mysql|mariadb|db)     restart_db;;
+        php|fpm|php-fpm)      restart_php;;
+        all|lamp)             restart_lamp;;
+        pm2)                  pm2_need && pm2 restart all;;
+        *)                    svc_restart "$2";;
+      esac;;
+    block)   [[ -n ${2:-} ]] || { err "Uso: lk block <ip> [motivo]"; return 1; }; block_ip "$2" "${*:3}";;
+    unblock) [[ -n ${2:-} ]] || { err "Uso: lk unblock <ip>"; return 1; }; unblock_ip "$2";;
+    blocked) list_blocked;;
+    fw-restore) fw_restore;;
+    site)
+      case "${2:-list}" in
+        add) site_add "${3:-}";;
+        del|rm|remove) site_del "${3:-}";;
+        on|ligar) if [[ -n ${3:-} ]]; then site_enable "$3"; else LK_CLI=""; site_toggle; fi;;
+        off|desligar) if [[ -n ${3:-} ]]; then site_disable "$3"; else LK_CLI=""; site_toggle; fi;;
+        *) site_list;;
+      esac;;
+    sites) site_list;;
+    ssl) ssl_issue "${2:-}";;
+    db)
+      case "${2:-list}" in
+        add|create) db_create "${3:-}";;
+        del|rm|drop) db_drop "${3:-}";;
+        *) db_list;;
+      esac;;
+    backup)  [[ -n ${2:-} ]] || { err "Uso: lk backup <site>|all"; return 1; }; lkm_job --backup "$2";;
+    backups) lkm_job --list "${2:-}";;
+    restore)
+      [[ -n ${2:-} && -n ${3:-} ]] || { err "Uso: lk restore <site> <arquivo>  (veja os arquivos com: lk backups <site>)"; return 1; }
+      confirm "Restaurar $2 a partir de $3? Os arquivos e o banco voltam a esse ponto (antes é feito um backup de segurança)" || return 1
+      lkm_job --restore "$2" "$3";;
+    lamp) install_lamp;;
+    monitor|painel) LK_CLI=""; monitor_menu;;
+    ssh) LK_CLI=""; ssh_menu;;
+    servidor|server)
+      case "${2:-}" in
+        on|ligar) LK_CLI=""; LK_SM_NOW=$(sm_when "${3:-}") server_mode_on;;
+        off|desligar|normal) LK_CLI=""; LK_SM_NOW=$(sm_when "${3:-}") server_mode_off;;
+        status) server_mode_status;;
+        *) LK_CLI=""; server_mode_menu;;
+      esac;;
+    bot)
+      case "${2:-status}" in on|ligar) bot_set 1;; off|desligar) bot_set 0;; teste|test) php /opt/lk-guard/guard.php teste;; *) bot_status;; esac;;
+    whatsapp|wa)
+      case "${2:-}" in
+        ""|instalar|install|atualizar|update) wa_run;;
+        remover|uninstall) wa_run uninstall;;
+        info|senha|guardiao|lk) wa_run "$2";;
+        *) err "Uso: lk whatsapp [instalar|info|guardiao|senha|remover]"; return 1;;
+      esac;;
+    tela|screen)
+      case "${2:-off}" in on|ligar|acender) screen_on;; *) screen_off;; esac;;
+    temp|temperatura) echo "CPU: $(cpu_temp)";;
+    2fa)
+      case "${2:-status}" in
+        off|desligar) rm -f /var/lib/lkmonitor/2fa.json && ok "2FA do painel desligado. Entre só com a senha e ative de novo na aba Internet.";;
+        *) if [[ -f /var/lib/lkmonitor/2fa.json ]] && grep -q '"enabled": true' /var/lib/lkmonitor/2fa.json; then ok "2FA do painel: LIGADO"; else warn "2FA do painel: desligado"; fi;;
+      esac;;
+    setup|instalar) lk_setup;;
+    senha|password|passwd)
+      [[ -f $LKM_INSTALLER ]] || { err "Instalador do painel não encontrado. Rode o install-lk.sh mais recente."; return 1; }
+      bash "$LKM_INSTALLER" senha;;
+    default-page) create_default_page;;
+    *) err "Comando desconhecido: $1"; usage; return 1;;
+  esac
+}
+
+# --------------------------------------------------------------------- início
+load_os
+case "${1:-}" in
+  help|-h|--help|version|-v|--version) cli "$@"; exit $?;;
+esac
+if [[ $EUID -ne 0 ]]; then
+  if command -v sudo >/dev/null 2>&1; then exec sudo bash "$(readlink -f "$0")" "$@"; fi
+  echo "${R}Execute como root${N}"; exit 1
+fi
+mkdir -p "$LK_DIR"; chmod 700 "$LK_DIR"; touch "$LK_BLOCKLIST"
+if [[ $# -eq 0 ]]; then main_menu; else cli "$@"; fi
