@@ -398,7 +398,7 @@ body.xt-noscroll{overflow:hidden}
 .ap-n small{display:block;color:var(--mut);font-size:11.5px;font-family:var(--mono)}
 .ap-logo{width:34px;height:34px;border-radius:6px;flex:none;box-shadow:0 0 0 1px #0000000f;object-fit:cover}
 .ap-logo.ini,.sw2 .ini{display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px}
-.ap-d{color:var(--mut);min-width:260px;line-height:1.45}
+.ap-d{color:var(--mut);min-width:220px;line-height:1.45;white-space:normal}
 .ap-note{margin-top:4px;font-size:12px;color:#1f6fb5}
 .ap-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .ap-st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;color:var(--mut)}

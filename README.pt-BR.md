@@ -6,7 +6,7 @@ Painel grátis, estilo aaPanel, para transformar um PC ou notebook velho num ser
 Tem sites, bancos de dados, arquivos, terminal no navegador, App Store, bot do WhatsApp e acesso de qualquer lugar.
 Também traz o comando `lk`, um menu completo no terminal.
 
-**Site:** [lkpanel.goodbits.tech](https://lkpanel.goodbits.tech/) · **Versão:** 2.3.0 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+**Site:** [lkpanel.goodbits.tech](https://lkpanel.goodbits.tech/) · **Versão:** 2.3.2 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
 > A interface do painel é em português.
 
@@ -85,6 +85,8 @@ cp dist/install-lk.sh install.sh # para publicar a versão nova
 
 | Versão | O que mudou |
 |---|---|
+| **2.3.2** | Correção: phpMyAdmin dava 403 quando instalado por uma App Store antiga (permissões das pastas); a atualização corrige sozinha |
+| **2.3.1** | App Store: phpMyAdmin com Ligar / Desligar. Corrigida a coluna "Ação" que saía da tela |
 | **2.3.0** | IP fixo na rede de casa: `lk ip-fixo on` (ou `sudo lk` › 38) deixa o servidor sempre no mesmo IP, começando no .200 e pulando os que já estão em uso |
 | **2.2.3** | `lk sites` e a opção 36 mostram quando a pasta de um site sumiu; ligar um site assim avisa que vai dar 404 |
 | **2.2.2** | Sites atrás do Tailscale Funnel / Cloudflare Tunnel abrem com CSS e JS (sem "Mixed Content"): o Apache avisa o PHP que a conexão é https (`lk proxy-https`) |

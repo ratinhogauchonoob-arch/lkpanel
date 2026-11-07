@@ -68,6 +68,29 @@ function unit_exists(string $u): bool
     return false;
 }
 
+function conf_on(string $c): bool
+{
+    return is_file("/etc/apache2/conf-enabled/$c.conf") || is_link("/etc/apache2/conf-enabled/$c.conf");
+}
+
+/** Liga/desliga uma página do Apache (a2enconf/a2disconf) e recarrega sem derrubar o painel. */
+function conf_set(array $a, string $op): void
+{
+    $c = (string)$a['conf'];
+    if ($op !== 'restart') {
+        [$x, $o] = run([$op === 'start' ? 'a2enconf' : 'a2disconf', '-q', $c], 30);
+        if ($x !== 0) fail('Falha: ' . ($o ?: $op));
+    }
+    [$x, $o] = run(['apache2ctl', 'configtest'], 30);
+    if ($x !== 0) {
+        if ($op === 'start') run(['a2disconf', '-q', $c], 30);
+        fail('Configuração do Apache com erro, nada foi mudado: ' . $o);
+    }
+    [$x, $o] = run(['systemctl', 'reload', 'apache2'], 60);
+    if ($x !== 0) fail('Falha ao recarregar o Apache: ' . $o);
+    out(['msg' => $a['name'] . ' ' . ['start' => 'ligado', 'stop' => 'desligado', 'restart' => 'recarregado'][$op]]);
+}
+
 function short_ver(string $v): string
 {
     $v = preg_replace('/^\d+:/', '', trim($v));                  // época do dpkg
@@ -146,6 +169,8 @@ function apps_state(): array
                 $ok = is_file((string)($a['file'] ?? ''));
             }
             $state = $ok && !empty($a['svc']) && unit_exists($a['svc']) ? ($st[$a['svc']] ?? 'unknown') : null;
+            // apps que são só uma página no Apache (phpMyAdmin): ligado = conf habilitada
+            if ($ok && !empty($a['conf']) && is_file('/etc/apache2/conf-available/' . $a['conf'] . '.conf')) $state = conf_on($a['conf']) ? 'active' : 'inactive';
         }
         // a página do WhatsApp fica numa porta própria (8089 ou a próxima livre)
         if ($a['id'] === 'whatsapp' && preg_match('/^Listen\s+(\d+)/m', (string)@file_get_contents('/etc/apache2/sites-available/whatsapp-panel.conf'), $m)) $a['port'] = (int)$m[1];
@@ -153,9 +178,9 @@ function apps_state(): array
         $inst[$a['id']] = $ok;
         $out[] = [
             'id' => $a['id'], 'name' => $a['name'], 'cat' => $a['cat'], 'desc' => $a['desc'], 'color' => $a['color'] ?? '#6b7280',
-            'installed' => $ok, 'version' => $ver, 'state' => $state, 'svc' => $state !== null ? ($a['svc'] ?? null) : null, 'docker' => isset($a['docker']),
+            'installed' => $ok, 'version' => $ver, 'state' => $state, 'svc' => $state !== null ? ($a['svc'] ?? $a['conf'] ?? null) : null, 'docker' => isset($a['docker']),
             'port' => $a['port'] ?? null, 'path' => $a['path'] ?? null, 'https' => !empty($a['https']),
-            'needs' => $a['needs'] ?? null, 'protect' => $a['protect'] ?? null, 'note' => $a['note'] ?? null,
+            'needs' => $a['needs'] ?? null, 'protect' => $a['protect'] ?? null, 'note' => $a['note'] ?? null, 'page' => !empty($a['conf']),
             'job' => $last[$a['id']] ?? null,
         ];
     }
@@ -199,6 +224,7 @@ switch ($act) {
         $op = (string)($req['op'] ?? '');
         if (!in_array($op, ['start', 'stop', 'restart'], true)) fail('Ação inválida');
         if (!$S['installed']) fail($a['name'] . ' não está instalado.');
+        if (!empty($a['conf']) && is_file('/etc/apache2/conf-available/' . $a['conf'] . '.conf')) conf_set($a, $op);
         if (isset($a['docker'])) [$c, $o] = run(['docker', $op, $a['docker']], 120);
         elseif (!empty($a['svc']) && unit_exists($a['svc'])) [$c, $o] = run(['systemctl', $op, $a['svc']], 120);
         elseif ($a['id'] === 'cloudflared') fail('O túnel ainda não foi criado. Conecte a conta da Cloudflare na aba Internet (passo 2).');

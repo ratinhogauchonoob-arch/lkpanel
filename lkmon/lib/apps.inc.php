@@ -73,7 +73,7 @@ cat > "$T/x/config.inc.php" <<PHPCFG
 PHPCFG
 rm -rf "$D.old"; [ -d "$D" ] && mv "$D" "$D.old"
 mv "$T/x" "$D"; rm -rf "$T" "$D.old"
-chown -R root:root "$D"; chmod 644 "$D/config.inc.php"
+chown -R root:root "$D"; find "$D" -type d -exec chmod 755 {} +; find "$D" -type f -exec chmod 644 {} +
 cat > /etc/apache2/conf-available/lk-phpmyadmin.conf <<APCONF
 # phpMyAdmin instalado pela App Store do LK Monitor (somente rede local)
 Alias /phpmyadmin $D
@@ -103,7 +103,7 @@ BASH_PMA;
         ['id' => 'mariadb', 'name' => 'MariaDB', 'cat' => 'db', 'color' => '#c0765a', 'pkgs' => ['mariadb-server', 'mariadb-client'], 'svc' => 'mariadb',
             'desc' => 'Banco de dados MySQL usado pelos sites (Laravel, WordPress…). Gerencie na aba Bancos.',
             'protect' => 'Os bancos dos seus sites ficam no MariaDB. Para remover, use o terminal do servidor.'],
-        ['id' => 'phpmyadmin', 'name' => 'phpMyAdmin', 'cat' => 'db', 'color' => '#f29111', 'path' => '/phpmyadmin', 'needs' => 'mariadb', 'file' => '/usr/share/lk-phpmyadmin/index.php',
+        ['id' => 'phpmyadmin', 'name' => 'phpMyAdmin', 'cat' => 'db', 'color' => '#f29111', 'path' => '/phpmyadmin', 'needs' => 'mariadb', 'file' => '/usr/share/lk-phpmyadmin/index.php', 'conf' => 'lk-phpmyadmin',
             'desc' => 'Gerenciar o MariaDB pelo navegador. Só abre na rede local.',
             'install' => [['Instalar phpMyAdmin e ligar no Apache (/phpmyadmin)', $pma]],
             'remove' => [['Remover phpMyAdmin', 'a2disconf -q lk-phpmyadmin 2>/dev/null; rm -f /etc/apache2/conf-available/lk-phpmyadmin.conf; rm -rf /usr/share/lk-phpmyadmin /var/lib/lk-phpmyadmin; systemctl reload apache2; echo OK']],

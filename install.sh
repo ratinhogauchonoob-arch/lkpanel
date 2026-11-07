@@ -35,7 +35,7 @@ cat > "$TMP" <<'LK_SCRIPT_EOF'
 #        lk help     -> comandos diretos
 # =====================================================================
 
-LK_VERSION="2.3.0"
+LK_VERSION="2.3.2"
 LKM_INSTALLER="/usr/local/share/lk/install-lk-monitor.sh"
 LKM_SITE="/etc/apache2/sites-available/lkmonitor.conf"
 LK_DIR="/etc/lk"
@@ -2105,7 +2105,7 @@ defined('LKM_TERM_PORT') || define('LKM_TERM_PORT', '0');
 defined('LKM_USER') || define('LKM_USER', 'root');
 define('LKM_LIB', dirname(LKM_FM_HELPER));
 require LKM_LIB . '/lib.php';
-const LKM_VERSION = '2.3.0';
+const LKM_VERSION = '2.3.2';
 const LKM_LOCK_MAX = 5;     // senhas erradas seguidas no login...
 const LKM_LOCK_MIN = 15;    // ...dentro destes minutos = bloqueio do IP por este tempo
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';   // base32 do 2FA (const precisa vir antes do código que roda)
@@ -5909,7 +5909,7 @@ body.xt-noscroll{overflow:hidden}
 .ap-n small{display:block;color:var(--mut);font-size:11.5px;font-family:var(--mono)}
 .ap-logo{width:34px;height:34px;border-radius:6px;flex:none;box-shadow:0 0 0 1px #0000000f;object-fit:cover}
 .ap-logo.ini,.sw2 .ini{display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:13px}
-.ap-d{color:var(--mut);min-width:260px;line-height:1.45}
+.ap-d{color:var(--mut);min-width:220px;line-height:1.45;white-space:normal}
 .ap-note{margin-top:4px;font-size:12px;color:#1f6fb5}
 .ap-tags{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .ap-st{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;color:var(--mut)}
@@ -7898,7 +7898,8 @@ cat > "$DIR/apps.js" <<'LKM_EOF_APPSJS'
     let st;
     if (mine) st = '<span class="ap-st run"><i class="jspin"></i>' + (a.job && a.job.op === 'remove' ? 'Removendo' : 'Instalando') + '</span>';
     else if (!a.installed) st = '<span class="ap-st">Não instalado</span>';
-    else if (a.state === 'active') st = '<span class="ap-st on"><b></b>Rodando</span>';
+    else if (a.state === 'active') st = '<span class="ap-st on"><b></b>' + (a.page ? 'Ligado' : 'Rodando') + '</span>';
+    else if (a.page && a.state === 'inactive') st = '<span class="ap-st"><b style="background:var(--dim)"></b>Desligado</span>';
     else if (a.state && a.state !== 'unknown') st = '<span class="ap-st off"><b></b>' + ({ inactive: 'Parado', exited: 'Parado', failed: 'Com erro', activating: 'Iniciando', created: 'Parado' }[a.state] || E(a.state)) + '</span>';
     else st = '<span class="ap-st ok">Instalado</span>';
 
@@ -7918,8 +7919,10 @@ cat > "$DIR/apps.js" <<'LKM_EOF_APPSJS'
       acts.push('<button class="abtn sm pri" data-a="install"' + (dis ? ' disabled title="' + E(why) + '"' : '') + '>Instalar</button>');
     } else {
       const u = url(a);
-      if (u) acts.push('<a class="lnk" href="' + E(u) + '" target="_blank" rel="noopener">Abrir</a>');
-      if (a.svc || a.docker) acts.push(a.state === 'active' ? '<button class="lnk" data-a="restart"' + (ok ? '' : ' disabled') + '>Reiniciar</button>'
+      if (u && !(a.page && a.state !== 'active')) acts.push('<a class="lnk" href="' + E(u) + '" target="_blank" rel="noopener">Abrir</a>');
+      if (a.page) acts.push(a.state === 'active' ? '<button class="lnk" data-a="off"' + (ok ? '' : ' disabled') + '>Desligar</button>'
+        : '<button class="lnk" data-a="start"' + (ok ? '' : ' disabled') + '>Ligar</button>');
+      else if (a.svc || a.docker) acts.push(a.state === 'active' ? '<button class="lnk" data-a="restart"' + (ok ? '' : ' disabled') + '>Reiniciar</button>'
         : '<button class="lnk" data-a="start"' + (ok ? '' : ' disabled') + '>Iniciar</button>');
       acts.push('<button class="lnk" data-a="more">Mais ▾</button>');
     }
@@ -7992,11 +7995,11 @@ cat > "$DIR/apps.js" <<'LKM_EOF_APPSJS'
   }
 
   async function svc(a, op) {
-    if (op === 'stop') {
+    if (op === 'stop' && !a.page) {
       const ok = await dialog({ title: 'Parar ' + a.name + '?', icon: 'power', html: '<p>' + E(a.name) + ' vai parar até você iniciar de novo (ou até o PC reiniciar).</p>', buttons: [{ label: 'Cancelar', value: null }, { label: 'Parar', value: true, kind: 'danger' }] });
       if (!ok) return;
     }
-    toast({ start: 'Iniciando ', stop: 'Parando ', restart: 'Reiniciando ' }[op] + a.name + '…');
+    toast((a.page ? { start: 'Ligando ', stop: 'Desligando ', restart: 'Recarregando ' } : { start: 'Iniciando ', stop: 'Parando ', restart: 'Reiniciando ' })[op] + a.name + '…');
     try { const d = await api('svc', { id: a.id, op }); toast(d.msg); load(true); }
     catch (e) { showErr('Falha em ' + a.name, e); }
   }
@@ -8010,12 +8013,14 @@ cat > "$DIR/apps.js" <<'LKM_EOF_APPSJS'
     if (!a) return;
     if (act === 'install') return start(a, 'install');
     if (act === 'start' || act === 'restart') return svc(a, act);
+    if (act === 'off') return svc(a, 'stop');
     if (act === 'more') {
       const ok = rw(), r = b.getBoundingClientRect(), ent = [];
       if (a.svc || a.docker) {
-        ent.push({ l: 'Iniciar', i: 'power', dis: !ok || a.state === 'active', fn: () => svc(a, 'start') });
-        ent.push({ l: 'Reiniciar', i: 'refresh', dis: !ok, fn: () => svc(a, 'restart') });
-        ent.push({ l: 'Parar', i: 'x', dis: !ok || a.state !== 'active', fn: () => svc(a, 'stop') }, '-');
+        const pg = a.page;
+        ent.push({ l: pg ? 'Ligar' : 'Iniciar', i: 'power', dis: !ok || a.state === 'active', fn: () => svc(a, 'start') });
+        if (!pg) ent.push({ l: 'Reiniciar', i: 'refresh', dis: !ok, fn: () => svc(a, 'restart') });
+        ent.push({ l: pg ? 'Desligar' : 'Parar', i: 'x', dis: !ok || a.state !== 'active', fn: () => svc(a, 'stop') }, '-');
       }
       const u = url(a);
       if (u) ent.push({ l: 'Copiar endereço', i: 'link', fn: () => U.copyText(u).then(() => toast('Endereço copiado')) });
@@ -10514,7 +10519,7 @@ LKM_EOF_CFJS
 cat > "$DIR/sw.js" <<'LKM_EOF_SW'
 /* LK Monitor - service worker: guarda só a "casca" do app (HTML de reserva, CSS, JS e ícones).
    Respostas das rotas ?api, ?cmd, ?fm, ?hist, ?sites, ?term e da página logada nunca vão para o cache. */
-const VER = '2.3.0';
+const VER = '2.3.2';
 const CACHE = 'lkm-shell-' + VER;
 const SHELL = ['offline.html', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png',
   'fm.css?v=' + VER, 'app.css?v=' + VER, 'fm.js?v=' + VER, 'term.js?v=' + VER, 'sites.js?v=' + VER, 'db.js?v=' + VER, 'config.js?v=' + VER, 'sys.js?v=' + VER, 'apps.js?v=' + VER, 'cf.js?v=' + VER];
@@ -14948,7 +14953,7 @@ cat > "$T/x/config.inc.php" <<PHPCFG
 PHPCFG
 rm -rf "$D.old"; [ -d "$D" ] && mv "$D" "$D.old"
 mv "$T/x" "$D"; rm -rf "$T" "$D.old"
-chown -R root:root "$D"; chmod 644 "$D/config.inc.php"
+chown -R root:root "$D"; find "$D" -type d -exec chmod 755 {} +; find "$D" -type f -exec chmod 644 {} +
 cat > /etc/apache2/conf-available/lk-phpmyadmin.conf <<APCONF
 # phpMyAdmin instalado pela App Store do LK Monitor (somente rede local)
 Alias /phpmyadmin $D
@@ -14978,7 +14983,7 @@ BASH_PMA;
         ['id' => 'mariadb', 'name' => 'MariaDB', 'cat' => 'db', 'color' => '#c0765a', 'pkgs' => ['mariadb-server', 'mariadb-client'], 'svc' => 'mariadb',
             'desc' => 'Banco de dados MySQL usado pelos sites (Laravel, WordPress…). Gerencie na aba Bancos.',
             'protect' => 'Os bancos dos seus sites ficam no MariaDB. Para remover, use o terminal do servidor.'],
-        ['id' => 'phpmyadmin', 'name' => 'phpMyAdmin', 'cat' => 'db', 'color' => '#f29111', 'path' => '/phpmyadmin', 'needs' => 'mariadb', 'file' => '/usr/share/lk-phpmyadmin/index.php',
+        ['id' => 'phpmyadmin', 'name' => 'phpMyAdmin', 'cat' => 'db', 'color' => '#f29111', 'path' => '/phpmyadmin', 'needs' => 'mariadb', 'file' => '/usr/share/lk-phpmyadmin/index.php', 'conf' => 'lk-phpmyadmin',
             'desc' => 'Gerenciar o MariaDB pelo navegador. Só abre na rede local.',
             'install' => [['Instalar phpMyAdmin e ligar no Apache (/phpmyadmin)', $pma]],
             'remove' => [['Remover phpMyAdmin', 'a2disconf -q lk-phpmyadmin 2>/dev/null; rm -f /etc/apache2/conf-available/lk-phpmyadmin.conf; rm -rf /usr/share/lk-phpmyadmin /var/lib/lk-phpmyadmin; systemctl reload apache2; echo OK']],
@@ -15180,6 +15185,29 @@ function unit_exists(string $u): bool
     return false;
 }
 
+function conf_on(string $c): bool
+{
+    return is_file("/etc/apache2/conf-enabled/$c.conf") || is_link("/etc/apache2/conf-enabled/$c.conf");
+}
+
+/** Liga/desliga uma página do Apache (a2enconf/a2disconf) e recarrega sem derrubar o painel. */
+function conf_set(array $a, string $op): void
+{
+    $c = (string)$a['conf'];
+    if ($op !== 'restart') {
+        [$x, $o] = run([$op === 'start' ? 'a2enconf' : 'a2disconf', '-q', $c], 30);
+        if ($x !== 0) fail('Falha: ' . ($o ?: $op));
+    }
+    [$x, $o] = run(['apache2ctl', 'configtest'], 30);
+    if ($x !== 0) {
+        if ($op === 'start') run(['a2disconf', '-q', $c], 30);
+        fail('Configuração do Apache com erro, nada foi mudado: ' . $o);
+    }
+    [$x, $o] = run(['systemctl', 'reload', 'apache2'], 60);
+    if ($x !== 0) fail('Falha ao recarregar o Apache: ' . $o);
+    out(['msg' => $a['name'] . ' ' . ['start' => 'ligado', 'stop' => 'desligado', 'restart' => 'recarregado'][$op]]);
+}
+
 function short_ver(string $v): string
 {
     $v = preg_replace('/^\d+:/', '', trim($v));                  // época do dpkg
@@ -15258,6 +15286,8 @@ function apps_state(): array
                 $ok = is_file((string)($a['file'] ?? ''));
             }
             $state = $ok && !empty($a['svc']) && unit_exists($a['svc']) ? ($st[$a['svc']] ?? 'unknown') : null;
+            // apps que são só uma página no Apache (phpMyAdmin): ligado = conf habilitada
+            if ($ok && !empty($a['conf']) && is_file('/etc/apache2/conf-available/' . $a['conf'] . '.conf')) $state = conf_on($a['conf']) ? 'active' : 'inactive';
         }
         // a página do WhatsApp fica numa porta própria (8089 ou a próxima livre)
         if ($a['id'] === 'whatsapp' && preg_match('/^Listen\s+(\d+)/m', (string)@file_get_contents('/etc/apache2/sites-available/whatsapp-panel.conf'), $m)) $a['port'] = (int)$m[1];
@@ -15265,9 +15295,9 @@ function apps_state(): array
         $inst[$a['id']] = $ok;
         $out[] = [
             'id' => $a['id'], 'name' => $a['name'], 'cat' => $a['cat'], 'desc' => $a['desc'], 'color' => $a['color'] ?? '#6b7280',
-            'installed' => $ok, 'version' => $ver, 'state' => $state, 'svc' => $state !== null ? ($a['svc'] ?? null) : null, 'docker' => isset($a['docker']),
+            'installed' => $ok, 'version' => $ver, 'state' => $state, 'svc' => $state !== null ? ($a['svc'] ?? $a['conf'] ?? null) : null, 'docker' => isset($a['docker']),
             'port' => $a['port'] ?? null, 'path' => $a['path'] ?? null, 'https' => !empty($a['https']),
-            'needs' => $a['needs'] ?? null, 'protect' => $a['protect'] ?? null, 'note' => $a['note'] ?? null,
+            'needs' => $a['needs'] ?? null, 'protect' => $a['protect'] ?? null, 'note' => $a['note'] ?? null, 'page' => !empty($a['conf']),
             'job' => $last[$a['id']] ?? null,
         ];
     }
@@ -15311,6 +15341,7 @@ switch ($act) {
         $op = (string)($req['op'] ?? '');
         if (!in_array($op, ['start', 'stop', 'restart'], true)) fail('Ação inválida');
         if (!$S['installed']) fail($a['name'] . ' não está instalado.');
+        if (!empty($a['conf']) && is_file('/etc/apache2/conf-available/' . $a['conf'] . '.conf')) conf_set($a, $op);
         if (isset($a['docker'])) [$c, $o] = run(['docker', $op, $a['docker']], 120);
         elseif (!empty($a['svc']) && unit_exists($a['svc'])) [$c, $o] = run(['systemctl', $op, $a['svc']], 120);
         elseif ($a['id'] === 'cloudflared') fail('O túnel ainda não foi criado. Conecte a conta da Cloudflare na aba Internet (passo 2).');
@@ -18587,6 +18618,12 @@ systemctl enable lk-firewall.service >/dev/null 2>&1 || true
 # Sites atrás do Funnel / Cloudflare Tunnel: PHP enxerga https (sem "Mixed Content")
 if command -v apache2ctl >/dev/null && [[ ! -e /etc/apache2/conf-enabled/lk-proxy-https.conf ]]; then
   /usr/bin/lk proxy-https >/dev/null 2>&1 && echo "${G}[OK]${N} Sites atrás do Tailscale Funnel / Cloudflare abrem com CSS (https)"
+fi
+
+# phpMyAdmin instalado por App Store antiga (umask 027): pastas 750 = 403 "search permissions are missing"
+if [[ -d /usr/share/lk-phpmyadmin ]] && find /usr/share/lk-phpmyadmin -type d ! -perm -o+x -print -quit | grep -q .; then
+  find /usr/share/lk-phpmyadmin -type d -exec chmod 755 {} + ; find /usr/share/lk-phpmyadmin -type f -exec chmod 644 {} +
+  echo "${G}[OK]${N} phpMyAdmin: permissões das pastas corrigidas (erro 403)"
 fi
 
 # Tailscale instalado: o Apache não pode pedir a 443 em todos os IPs (o Funnel usa a 443 no IP do Tailscale)

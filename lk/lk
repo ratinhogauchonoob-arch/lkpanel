@@ -5,7 +5,7 @@
 #        lk help     -> comandos diretos
 # =====================================================================
 
-LK_VERSION="2.3.0"
+LK_VERSION="2.3.2"
 LKM_INSTALLER="/usr/local/share/lk/install-lk-monitor.sh"
 LKM_SITE="/etc/apache2/sites-available/lkmonitor.conf"
 LK_DIR="/etc/lk"

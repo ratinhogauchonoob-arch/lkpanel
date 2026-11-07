@@ -82,7 +82,8 @@
     let st;
     if (mine) st = '<span class="ap-st run"><i class="jspin"></i>' + (a.job && a.job.op === 'remove' ? 'Removendo' : 'Instalando') + '</span>';
     else if (!a.installed) st = '<span class="ap-st">Não instalado</span>';
-    else if (a.state === 'active') st = '<span class="ap-st on"><b></b>Rodando</span>';
+    else if (a.state === 'active') st = '<span class="ap-st on"><b></b>' + (a.page ? 'Ligado' : 'Rodando') + '</span>';
+    else if (a.page && a.state === 'inactive') st = '<span class="ap-st"><b style="background:var(--dim)"></b>Desligado</span>';
     else if (a.state && a.state !== 'unknown') st = '<span class="ap-st off"><b></b>' + ({ inactive: 'Parado', exited: 'Parado', failed: 'Com erro', activating: 'Iniciando', created: 'Parado' }[a.state] || E(a.state)) + '</span>';
     else st = '<span class="ap-st ok">Instalado</span>';
 
@@ -102,8 +103,10 @@
       acts.push('<button class="abtn sm pri" data-a="install"' + (dis ? ' disabled title="' + E(why) + '"' : '') + '>Instalar</button>');
     } else {
       const u = url(a);
-      if (u) acts.push('<a class="lnk" href="' + E(u) + '" target="_blank" rel="noopener">Abrir</a>');
-      if (a.svc || a.docker) acts.push(a.state === 'active' ? '<button class="lnk" data-a="restart"' + (ok ? '' : ' disabled') + '>Reiniciar</button>'
+      if (u && !(a.page && a.state !== 'active')) acts.push('<a class="lnk" href="' + E(u) + '" target="_blank" rel="noopener">Abrir</a>');
+      if (a.page) acts.push(a.state === 'active' ? '<button class="lnk" data-a="off"' + (ok ? '' : ' disabled') + '>Desligar</button>'
+        : '<button class="lnk" data-a="start"' + (ok ? '' : ' disabled') + '>Ligar</button>');
+      else if (a.svc || a.docker) acts.push(a.state === 'active' ? '<button class="lnk" data-a="restart"' + (ok ? '' : ' disabled') + '>Reiniciar</button>'
         : '<button class="lnk" data-a="start"' + (ok ? '' : ' disabled') + '>Iniciar</button>');
       acts.push('<button class="lnk" data-a="more">Mais ▾</button>');
     }
@@ -176,11 +179,11 @@
   }
 
   async function svc(a, op) {
-    if (op === 'stop') {
+    if (op === 'stop' && !a.page) {
       const ok = await dialog({ title: 'Parar ' + a.name + '?', icon: 'power', html: '<p>' + E(a.name) + ' vai parar até você iniciar de novo (ou até o PC reiniciar).</p>', buttons: [{ label: 'Cancelar', value: null }, { label: 'Parar', value: true, kind: 'danger' }] });
       if (!ok) return;
     }
-    toast({ start: 'Iniciando ', stop: 'Parando ', restart: 'Reiniciando ' }[op] + a.name + '…');
+    toast((a.page ? { start: 'Ligando ', stop: 'Desligando ', restart: 'Recarregando ' } : { start: 'Iniciando ', stop: 'Parando ', restart: 'Reiniciando ' })[op] + a.name + '…');
     try { const d = await api('svc', { id: a.id, op }); toast(d.msg); load(true); }
     catch (e) { showErr('Falha em ' + a.name, e); }
   }
@@ -194,12 +197,14 @@
     if (!a) return;
     if (act === 'install') return start(a, 'install');
     if (act === 'start' || act === 'restart') return svc(a, act);
+    if (act === 'off') return svc(a, 'stop');
     if (act === 'more') {
       const ok = rw(), r = b.getBoundingClientRect(), ent = [];
       if (a.svc || a.docker) {
-        ent.push({ l: 'Iniciar', i: 'power', dis: !ok || a.state === 'active', fn: () => svc(a, 'start') });
-        ent.push({ l: 'Reiniciar', i: 'refresh', dis: !ok, fn: () => svc(a, 'restart') });
-        ent.push({ l: 'Parar', i: 'x', dis: !ok || a.state !== 'active', fn: () => svc(a, 'stop') }, '-');
+        const pg = a.page;
+        ent.push({ l: pg ? 'Ligar' : 'Iniciar', i: 'power', dis: !ok || a.state === 'active', fn: () => svc(a, 'start') });
+        if (!pg) ent.push({ l: 'Reiniciar', i: 'refresh', dis: !ok, fn: () => svc(a, 'restart') });
+        ent.push({ l: pg ? 'Desligar' : 'Parar', i: 'x', dis: !ok || a.state !== 'active', fn: () => svc(a, 'stop') }, '-');
       }
       const u = url(a);
       if (u) ent.push({ l: 'Copiar endereço', i: 'link', fn: () => U.copyText(u).then(() => toast('Endereço copiado')) });

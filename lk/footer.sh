@@ -36,6 +36,12 @@ if command -v apache2ctl >/dev/null && [[ ! -e /etc/apache2/conf-enabled/lk-prox
   /usr/bin/lk proxy-https >/dev/null 2>&1 && echo "${G}[OK]${N} Sites atrás do Tailscale Funnel / Cloudflare abrem com CSS (https)"
 fi
 
+# phpMyAdmin instalado por App Store antiga (umask 027): pastas 750 = 403 "search permissions are missing"
+if [[ -d /usr/share/lk-phpmyadmin ]] && find /usr/share/lk-phpmyadmin -type d ! -perm -o+x -print -quit | grep -q .; then
+  find /usr/share/lk-phpmyadmin -type d -exec chmod 755 {} + ; find /usr/share/lk-phpmyadmin -type f -exec chmod 644 {} +
+  echo "${G}[OK]${N} phpMyAdmin: permissões das pastas corrigidas (erro 403)"
+fi
+
 # Tailscale instalado: o Apache não pode pedir a 443 em todos os IPs (o Funnel usa a 443 no IP do Tailscale)
 if command -v tailscale >/dev/null && command -v apache2ctl >/dev/null && ! grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf; then
   echo "${C}[..]${N} Ajustando o Apache para dividir a porta 443 com o Tailscale..."
