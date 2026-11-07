@@ -481,3 +481,11 @@ body.xt-noscroll{overflow:hidden}
 .tfa-in{text-align:center;font:600 22px var(--mono)!important;letter-spacing:.35em;height:46px!important}
 .tfa-codes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0}
 .tfa-codes code{font-size:15px;padding:8px;text-align:center}
+
+/* idioma do painel (i18n.js) */
+.lk-langrow{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.lk-langrow small{color:var(--mut);font-size:12px}
+.lk-lang2{display:flex;gap:4px}
+.lk-lang2 .lk-lb{font:600 12.5px var(--mono);padding:6px 14px;border-radius:3px;border:1px solid var(--line2);background:#fff;color:var(--tx);cursor:pointer}
+.lk-lang2 .lk-lb:hover{border-color:var(--ok);color:var(--ok)}
+.lk-lang2 .lk-lb.on{background:var(--pri);border-color:var(--pri);color:#fff}

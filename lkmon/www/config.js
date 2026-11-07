@@ -29,6 +29,7 @@
     root = qs('#config');
     root.innerHTML =
       '<section class="cf-grid">' +
+      '<div class="card cf-card"><div class="ct"><h2>' + svg('globe') + 'Idioma do painel</h2><span>o painel inteiro muda na hora</span></div><div class="lk-langrow"><div class="lk-lang2" id="cfLang"></div><small>Algumas mensagens longas de ajuda ainda aparecem em português.</small></div></div>' +
       '<div class="card cf-card"><div class="ct"><h2>' + svg('bell') + 'Alertas</h2><span id="cfAct"></span></div><div id="cfRules"></div></div>' +
       '<div class="card cf-card"><div class="ct"><h2>' + svg('send') + 'Canais de aviso</h2></div><div id="cfCh"></div></div>' +
       '</section>' +
@@ -37,6 +38,7 @@
       '<div class="card cf-card"><div class="ct"><h2>' + svg('archive') + 'Backup automático</h2><span id="bkNext"></span></div><div id="cfBk"></div></div>' +
       '<div class="card cf-card"><div class="ct"><h2>' + svg('log') + 'Histórico de alertas</h2><button type="button" class="lnk" id="cfClr">limpar</button></div><div id="cfHist" class="cf-hist"></div></div>' +
       '</section>';
+    if (window.LKI18N) window.LKI18N.picker(qs('#cfLang'));
     qs('#cfSave').onclick = save;
     qs('#cfClr').onclick = clearHist;
     root.addEventListener('click', e => { const b = e.target.closest('[data-sw]'); if (b && !b.disabled) { b.classList.toggle('on'); dirty(); } });

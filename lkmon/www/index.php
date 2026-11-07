@@ -13,7 +13,7 @@ defined('LKM_TERM_PORT') || define('LKM_TERM_PORT', '0');
 defined('LKM_USER') || define('LKM_USER', 'root');
 define('LKM_LIB', dirname(LKM_FM_HELPER));
 require LKM_LIB . '/lib.php';
-const LKM_VERSION = '2.3.2';
+const LKM_VERSION = '2.4.0';
 const LKM_LOCK_MAX = 5;     // senhas erradas seguidas no login...
 const LKM_LOCK_MIN = 15;    // ...dentro destes minutos = bloqueio do IP por este tempo
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';   // base32 do 2FA (const precisa vir antes do código que roda)
@@ -481,6 +481,7 @@ function pw_endpoint(): void
 
 function page_setpw(string $err): void
 {
+    $ver = LKM_VERSION;
     $title = htmlspecialchars(LKM_TITLE);
     $host = htmlspecialchars((string)gethostname());
     $err = htmlspecialchars($err);
@@ -492,7 +493,8 @@ function page_setpw(string $err): void
         : '';
     echo <<<HTML
 <!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{$title} · Senha nova</title>{$pwa}<style>{$css}
+<title>{$title} · Senha nova</title>{$pwa}<script src="i18n.js?v={$ver}" defer></script><style>{$css}
+.lk-lang{display:flex;gap:2px;justify-content:center;margin-top:16px}.lk-lb{width:auto!important;margin:0!important;padding:4px 9px!important;font:600 11.5px var(--mono)!important;border-radius:3px!important;background:none!important;color:var(--mut)!important;border:1px solid var(--line2)!important;cursor:pointer}.lk-lb.on{background:var(--pri)!important;color:#fff!important;border-color:var(--pri)!important}
 .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
 form{width:100%;max-width:400px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:30px 28px;box-shadow:0 30px 80px #0008}
 .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;margin-bottom:4px}
@@ -521,6 +523,7 @@ button:hover{filter:brightness(1.1)}
 <div class="row"><a id="show">Mostrar senha</a><a id="gen">Gerar uma forte</a></div>
 {$rootBox}
 <button type="submit">Salvar e entrar</button><div class="err">{$err}</div>
+<div class="lk-lang" id="lkLang"></div>
 </form></div>
 <script>
 (function () {
@@ -1529,6 +1532,7 @@ function pwa_head(): string
 
 function page_login(string $err, bool $code = false): void
 {
+    $ver = LKM_VERSION;
     $title = htmlspecialchars(LKM_TITLE);
     $host = htmlspecialchars((string)gethostname());
     $err = htmlspecialchars($err);
@@ -1543,7 +1547,8 @@ function page_login(string $err, bool $code = false): void
           . '<input type="password" name="pass" placeholder="Senha" autocomplete="current-password" autofocus required><button type="submit">Entrar</button>';
     echo <<<HTML
 <!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{$title} · Login</title>{$pwa}<style>{$css}
+<title>{$title} · Login</title>{$pwa}<script src="i18n.js?v={$ver}" defer></script><style>{$css}
+.lk-lang{display:flex;gap:2px;justify-content:center;margin-top:16px}.lk-lb{width:auto!important;margin:0!important;padding:4px 9px!important;font:600 11.5px var(--mono)!important;border-radius:3px!important;background:none!important;color:var(--mut)!important;border:1px solid var(--line2)!important;cursor:pointer}.lk-lb.on{background:var(--pri)!important;color:#fff!important;border-color:var(--pri)!important}
 .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
 form{width:100%;max-width:360px;background:var(--card);border:1px solid var(--line);border-radius:18px;padding:32px 28px;box-shadow:0 30px 80px #0008}
 .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;margin-bottom:4px}
@@ -1560,6 +1565,7 @@ button:hover{filter:brightness(1.1)}
 </style></head><body><div class="wrap"><form method="post" autocomplete="off">
 <div class="logo"><i></i>{$title}</div><p>{$host}</p>
 {$field}<div class="err">{$err}</div>
+<div class="lk-lang" id="lkLang"></div>
 </form></div></body></html>
 HTML;
 }
@@ -2084,6 +2090,6 @@ if(matchMedia('(display-mode: standalone)').matches||navigator.standalone)\$('pw
   }});
   if(r==='inst'&&BIP){BIP.prompt();BIP=null}
 };
-</script><script src="fm.js?v={$ver}"></script><script src="term.js?v={$ver}"></script><script src="sites.js?v={$ver}"></script><script src="db.js?v={$ver}"></script><script src="config.js?v={$ver}"></script><script src="sys.js?v={$ver}"></script><script src="apps.js?v={$ver}"></script><script src="cf.js?v={$ver}"></script></body></html>
+</script><script src="i18n.js?v={$ver}"></script><script src="fm.js?v={$ver}"></script><script src="term.js?v={$ver}"></script><script src="sites.js?v={$ver}"></script><script src="db.js?v={$ver}"></script><script src="config.js?v={$ver}"></script><script src="sys.js?v={$ver}"></script><script src="apps.js?v={$ver}"></script><script src="cf.js?v={$ver}"></script></body></html>
 HTML;
 }

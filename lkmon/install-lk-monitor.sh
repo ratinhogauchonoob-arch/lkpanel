@@ -260,6 +260,9 @@ cat > "$DIR/apps.js" <<'LKM_EOF_APPSJS'
 @@FILE www/apps.js@@
 LKM_EOF_APPSJS
 @@DIR www/appicons $DIR/appicons@@
+cat > "$DIR/i18n.js" <<'LKM_EOF_I18NJS'
+@@FILE www/i18n.js@@
+LKM_EOF_I18NJS
 cat > "$DIR/cf.js" <<'LKM_EOF_CFJS'
 @@FILE www/cf.js@@
 LKM_EOF_CFJS
