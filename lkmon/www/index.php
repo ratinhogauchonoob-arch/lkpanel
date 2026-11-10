@@ -13,7 +13,7 @@ defined('LKM_TERM_PORT') || define('LKM_TERM_PORT', '0');
 defined('LKM_USER') || define('LKM_USER', 'root');
 define('LKM_LIB', dirname(LKM_FM_HELPER));
 require LKM_LIB . '/lib.php';
-const LKM_VERSION = '2.4.0';
+const LKM_VERSION = '2.4.1';
 const LKM_LOCK_MAX = 5;     // senhas erradas seguidas no login...
 const LKM_LOCK_MIN = 15;    // ...dentro destes minutos = bloqueio do IP por este tempo
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';   // base32 do 2FA (const precisa vir antes do código que roda)

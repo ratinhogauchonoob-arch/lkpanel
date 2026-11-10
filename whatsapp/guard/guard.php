@@ -6,7 +6,9 @@
  *    para REINICIAR / DESLIGAR. Repete a cada REPEAT_MIN minutos enquanto continuar quente.
  *  - Temperatura >= CRIT_TEMP: avisa e desliga sozinho depois de CRIT_MIN minutos
  *    (se AUTO_OFF=1), a menos que alguém responda CANCELAR <código>.
- *  - Comandos aceitos só dos números em NUMBERS: STATUS, REINICIAR, DESLIGAR, CANCELAR, AJUDA.
+ *  - Comandos aceitos só dos números em NUMBERS: STATUS, REINICIAR, DESLIGAR, CANCELAR, AJUDA, IDIOMA
+ *    (também em inglês e espanhol: RESTART/SHUTDOWN/CANCEL/HELP/LANGUAGE, APAGAR/AYUDA).
+ *  - Responde em LANG (en, pt ou es; padrão en). Trocar: IDIOMA PT / LANGUAGE EN / IDIOMA ES.
  *
  * Mensagens chegam pelo hook.php da página do WhatsApp, que grava em /var/lib/lk-guard/inbox.
  * Roda como root (systemd: lk-guard.service).
@@ -44,7 +46,7 @@ function read_kv(string $file): array
 
 function conf(): array
 {
-    $d = ['NUMBERS' => '', 'WARN_TEMP' => 90, 'WARN_MIN' => 1, 'CRIT_TEMP' => 97, 'CRIT_MIN' => 2, 'AUTO_OFF' => 1, 'REPEAT_MIN' => 15, 'BOT' => 1];
+    $d = ['NUMBERS' => '', 'WARN_TEMP' => 90, 'WARN_MIN' => 1, 'CRIT_TEMP' => 97, 'CRIT_MIN' => 2, 'AUTO_OFF' => 1, 'REPEAT_MIN' => 15, 'BOT' => 1, 'LANG' => 'en'];
     $c = read_kv(CONF);
     foreach ($d as $k => $v) {
         if (!isset($c[$k]) || trim((string)$c[$k], "\"' ") === '') continue;
@@ -60,6 +62,7 @@ function conf(): array
         if (strlen($n) >= 8 && strlen($n) <= 15) $nums[] = $n;
     }
     $d['nums'] = array_values(array_unique($nums));
+    $d['LANG'] = lang_code((string)$d['LANG']) ?: 'en';
     return $d;
 }
 
@@ -147,6 +150,133 @@ function lid_to_number(string $lid, array $nums): string
     return $found;
 }
 
+
+/* ===== Idiomas do bot (LK-BOT-I18N, 2.4.1) =====
+   LANG=en|pt|es em /etc/lk-guard.conf (padrão: en). Troca pelo WhatsApp: IDIOMA PT / LANGUAGE EN / IDIOMA ES.
+   Os comandos funcionam nos 3 idiomas, seja qual for o idioma escolhido. */
+function lang_code(string $s): string
+{
+    $s = norm_text($s);
+    $map = ['pt' => 'pt', 'br' => 'pt', 'portugues' => 'pt', 'portuguese' => 'pt', 'ptbr' => 'pt',
+            'en' => 'en', 'us' => 'en', 'eng' => 'en', 'english' => 'en', 'ingles' => 'en',
+            'es' => 'es', 'pa' => 'es', 'esp' => 'es', 'espanol' => 'es', 'spanish' => 'es', 'castellano' => 'es'];
+    return $map[str_replace(' ', '', $s)] ?? '';
+}
+
+function L(): string
+{
+    static $cache = null, $at = 0;
+    if (!empty($GLOBALS['__lk_lang_force'])) { $cache = $GLOBALS['__lk_lang_force']; $at = time(); unset($GLOBALS['__lk_lang_force']); }
+    if ($cache === null || time() - $at > 5) { $cache = conf()['LANG']; $at = time(); }
+    return $cache;
+}
+
+/* palavras dos comandos mostradas nas mensagens, no idioma escolhido */
+function W(string $k): string
+{
+    $w = ['pt' => ['status' => 'STATUS', 'reboot' => 'REINICIAR', 'off' => 'DESLIGAR', 'cancel' => 'CANCELAR', 'help' => 'AJUDA', 'lang' => 'IDIOMA'],
+          'en' => ['status' => 'STATUS', 'reboot' => 'RESTART', 'off' => 'SHUTDOWN', 'cancel' => 'CANCEL', 'help' => 'HELP', 'lang' => 'LANGUAGE'],
+          'es' => ['status' => 'STATUS', 'reboot' => 'REINICIAR', 'off' => 'APAGAR', 'cancel' => 'CANCELAR', 'help' => 'AYUDA', 'lang' => 'IDIOMA']];
+    return $w[L()][$k] ?? $w['en'][$k];
+}
+
+function t(string $k, array $v = []): string
+{
+    static $T = [
+     'pt' => [
+      'nosensor' => 'sem sensor', 'cpu' => 'CPU', 'load' => 'Carga', 'cores' => 'núcleos', 'ram' => 'RAM', 'of' => 'de',
+      'disk' => 'Disco', 'used' => 'usado', 'up' => 'Ligado há',
+      'help_h' => 'comandos', 'help_status' => 'temperatura, CPU, RAM e disco', 'help_reboot' => 'reinicia o servidor (pede confirmação)',
+      'help_off' => 'desliga o servidor (pede confirmação)', 'help_cancel' => 'cancela o desligamento automático', 'code' => 'código',
+      'help_lang' => 'muda o idioma do bot',
+      'back' => '✅ *{h}* ligado de novo (reiniciou há {d}).',
+      'crit' => "🛑 *{h}* chegou a *{t}*!\n\nVou *{OFF}* em {m} min para proteger o notebook, se não baixar.\nResponda *{CANCEL} {c}* para impedir, ou *{OFF} {c}* para desligar agora.",
+      'crit_ok' => '👍 *{h}*: temperatura baixou para *{t}*. Desligamento automático cancelado.',
+      'warn' => "🔥 *{h}* está em *{t}* (limite {l} °C).\n\nResponda com:\n*{REBOOT} {c}* – reinicia o servidor\n*{OFF} {c}* – desliga o servidor\n*{STATUS}* – mostra como ele está\n\nO código vale 30 min.",
+      'normal' => '✅ *{h}*: temperatura voltou ao normal (*{t}*).',
+      'autooff' => "⏻ *{h}* continua em *{t}*: desligando agora para proteger o notebook.\nPara ligar de novo, use o botão de energia.",
+      'no_auto' => 'Não há desligamento automático agendado.',
+      'bad_cancel' => 'Código inválido. Responda *{CANCEL}* seguido do código do último aviso.',
+      'cancelled' => '🟡 Desligamento automático de *{h}* cancelado por +{f}. Volto a vigiar em 30 min.',
+      'confirm' => "Para confirmar, responda:\n*{w} {c}*\n\n{x}\nO código vale 5 min.",
+      'confirm_reboot' => 'O servidor e os sites ficam fora do ar por cerca de 1 minuto.',
+      'confirm_off' => '⚠️ Para ligar de novo, só pelo botão de energia do notebook.',
+      'bad_code' => 'Código inválido ou vencido. Mande *{w}* para receber um novo.',
+      'rebooting' => '🔄 Reiniciando *{h}* a pedido de +{f}. Aviso quando ele voltar.',
+      'off_now' => "⏻ Desligando *{h}* a pedido de +{f}. Para ligar de novo, use o botão de energia.",
+      'test' => '✅ Guardião de *{h}* funcionando.',
+      'lang_ok' => '🌎 Pronto! Agora eu falo *português*.',
+      'lang_ask' => "🌎 Idioma atual: *português*.\nMande *IDIOMA PT*, *IDIOMA ES* ou *LANGUAGE EN*.",
+     ],
+     'en' => [
+      'nosensor' => 'no sensor', 'cpu' => 'CPU', 'load' => 'Load', 'cores' => 'cores', 'ram' => 'RAM', 'of' => 'of',
+      'disk' => 'Disk', 'used' => 'used', 'up' => 'Up for',
+      'help_h' => 'commands', 'help_status' => 'temperature, CPU, RAM and disk', 'help_reboot' => 'restarts the server (asks to confirm)',
+      'help_off' => 'shuts the server down (asks to confirm)', 'help_cancel' => 'cancels the automatic shutdown', 'code' => 'code',
+      'help_lang' => 'changes the bot language',
+      'back' => '✅ *{h}* is back on (restarted {d} ago).',
+      'crit' => "🛑 *{h}* reached *{t}*!\n\nI'll *{OFF}* in {m} min to protect the laptop if it doesn't cool down.\nReply *{CANCEL} {c}* to stop it, or *{OFF} {c}* to shut down now.",
+      'crit_ok' => '👍 *{h}*: temperature dropped to *{t}*. Automatic shutdown cancelled.',
+      'warn' => "🔥 *{h}* is at *{t}* (limit {l} °C).\n\nReply with:\n*{REBOOT} {c}* – restarts the server\n*{OFF} {c}* – shuts the server down\n*{STATUS}* – shows how it's doing\n\nThe code is valid for 30 min.",
+      'normal' => '✅ *{h}*: temperature is back to normal (*{t}*).',
+      'autooff' => "⏻ *{h}* is still at *{t}*: shutting down now to protect the laptop.\nTo turn it back on, use the power button.",
+      'no_auto' => 'No automatic shutdown is scheduled.',
+      'bad_cancel' => 'Invalid code. Reply *{CANCEL}* followed by the code from the last alert.',
+      'cancelled' => '🟡 Automatic shutdown of *{h}* cancelled by +{f}. I\'ll keep watching again in 30 min.',
+      'confirm' => "To confirm, reply:\n*{w} {c}*\n\n{x}\nThe code is valid for 5 min.",
+      'confirm_reboot' => 'The server and the sites will be offline for about 1 minute.',
+      'confirm_off' => '⚠️ To turn it back on, you need the laptop\'s power button.',
+      'bad_code' => 'Invalid or expired code. Send *{w}* to get a new one.',
+      'rebooting' => '🔄 Restarting *{h}* as requested by +{f}. I\'ll let you know when it\'s back.',
+      'off_now' => "⏻ Shutting down *{h}* as requested by +{f}. To turn it back on, use the power button.",
+      'test' => '✅ Guardian of *{h}* is working.',
+      'lang_ok' => '🌎 Done! I now speak *English*.',
+      'lang_ask' => "🌎 Current language: *English*.\nSend *LANGUAGE EN*, *IDIOMA ES* or *IDIOMA PT*.",
+     ],
+     'es' => [
+      'nosensor' => 'sin sensor', 'cpu' => 'CPU', 'load' => 'Carga', 'cores' => 'núcleos', 'ram' => 'RAM', 'of' => 'de',
+      'disk' => 'Disco', 'used' => 'usado', 'up' => 'Encendido hace',
+      'help_h' => 'comandos', 'help_status' => 'temperatura, CPU, RAM y disco', 'help_reboot' => 'reinicia el servidor (pide confirmación)',
+      'help_off' => 'apaga el servidor (pide confirmación)', 'help_cancel' => 'cancela el apagado automático', 'code' => 'código',
+      'help_lang' => 'cambia el idioma del bot',
+      'back' => '✅ *{h}* encendido de nuevo (se reinició hace {d}).',
+      'crit' => "🛑 ¡*{h}* llegó a *{t}*!\n\nVoy a *{OFF}* en {m} min para proteger la laptop si no baja.\nResponde *{CANCEL} {c}* para impedirlo, o *{OFF} {c}* para apagar ahora.",
+      'crit_ok' => '👍 *{h}*: la temperatura bajó a *{t}*. Apagado automático cancelado.',
+      'warn' => "🔥 *{h}* está en *{t}* (límite {l} °C).\n\nResponde con:\n*{REBOOT} {c}* – reinicia el servidor\n*{OFF} {c}* – apaga el servidor\n*{STATUS}* – muestra cómo está\n\nEl código vale 30 min.",
+      'normal' => '✅ *{h}*: la temperatura volvió a la normalidad (*{t}*).',
+      'autooff' => "⏻ *{h}* sigue en *{t}*: apagando ahora para proteger la laptop.\nPara encenderlo de nuevo, usa el botón de encendido.",
+      'no_auto' => 'No hay apagado automático programado.',
+      'bad_cancel' => 'Código inválido. Responde *{CANCEL}* seguido del código del último aviso.',
+      'cancelled' => '🟡 Apagado automático de *{h}* cancelado por +{f}. Vuelvo a vigilar en 30 min.',
+      'confirm' => "Para confirmar, responde:\n*{w} {c}*\n\n{x}\nEl código vale 5 min.",
+      'confirm_reboot' => 'El servidor y los sitios quedan fuera de línea por cerca de 1 minuto.',
+      'confirm_off' => '⚠️ Para encenderlo de nuevo, solo con el botón de encendido de la laptop.',
+      'bad_code' => 'Código inválido o vencido. Manda *{w}* para recibir uno nuevo.',
+      'rebooting' => '🔄 Reiniciando *{h}* a pedido de +{f}. Te aviso cuando vuelva.',
+      'off_now' => "⏻ Apagando *{h}* a pedido de +{f}. Para encenderlo de nuevo, usa el botón de encendido.",
+      'test' => '✅ Guardián de *{h}* funcionando.',
+      'lang_ok' => '🌎 ¡Listo! Ahora hablo *español*.',
+      'lang_ask' => "🌎 Idioma actual: *español*.\nManda *IDIOMA ES*, *IDIOMA PT* o *LANGUAGE EN*.",
+     ]];
+    $s = $T[L()][$k] ?? $T['en'][$k] ?? $k;
+    $v += ['REBOOT' => W('reboot'), 'OFF' => W('off'), 'CANCEL' => W('cancel'), 'STATUS' => W('status')];
+    foreach ($v as $kk => $vv) $s = str_replace('{' . $kk . '}', (string)$vv, $s);
+    return $s;
+}
+
+/* grava LANG=xx em /etc/lk-guard.conf (mantém o resto do arquivo) */
+function set_lang(string $code): bool
+{
+    $lines = @file(CONF, FILE_IGNORE_NEW_LINES);
+    if ($lines === false) return false;
+    $done = false;
+    foreach ($lines as $i => $l) if (preg_match('/^\s*LANG\s*=/', $l)) { $lines[$i] = "LANG=$code"; $done = true; }
+    if (!$done) { $lines[] = '# Idioma do bot: en, pt ou es (WhatsApp: IDIOMA PT / LANGUAGE EN / IDIOMA ES)'; $lines[] = "LANG=$code"; }
+    $ok = @file_put_contents(CONF, implode("\n", $lines) . "\n") !== false;
+    @chmod(CONF, 0600);
+    return $ok;
+}
+
 function cpu_temp(): ?float
 {
     if (TEMP_FILE !== '') {
@@ -198,21 +328,23 @@ function status_text(): string
     $dt = @disk_total_space('/') ?: 0;
     $df = @disk_free_space('/') ?: 0;
     $up = (int)(float)@file_get_contents('/proc/uptime');
+    $dec = L() === 'en' ? '.' : ',';
     return "📊 *" . host() . "*\n"
-        . "🌡️ CPU: " . ($t !== null ? round($t) . ' °C' : 'sem sensor') . "\n"
-        . "⚙️ Carga: " . ($la[0] ?? '?') . " ($cores núcleos)\n"
-        . "🧠 RAM: " . number_format($used, 1, ',', '') . " de " . number_format($tot, 1, ',', '') . " GB\n"
-        . "💾 Disco: " . ($dt > 0 ? round(100 * ($dt - $df) / $dt) : '?') . "% usado\n"
-        . "⏱️ Ligado há " . fmt_dur($up);
+        . "🌡️ " . t('cpu') . ": " . ($t !== null ? round($t) . ' °C' : t('nosensor')) . "\n"
+        . "⚙️ " . t('load') . ": " . ($la[0] ?? '?') . " ($cores " . t('cores') . ")\n"
+        . "🧠 " . t('ram') . ": " . number_format($used, 1, $dec, '') . " " . t('of') . " " . number_format($tot, 1, $dec, '') . " GB\n"
+        . "💾 " . t('disk') . ": " . ($dt > 0 ? round(100 * ($dt - $df) / $dt) : '?') . "% " . t('used') . "\n"
+        . "⏱️ " . t('up') . " " . fmt_dur($up);
 }
 
 function help_text(): string
 {
-    return "🤖 *" . host() . "* — comandos:\n"
-        . "*STATUS* – temperatura, CPU, RAM e disco\n"
-        . "*REINICIAR* – reinicia o servidor (pede confirmação)\n"
-        . "*DESLIGAR* – desliga o servidor (pede confirmação)\n"
-        . "*CANCELAR <código>* – cancela o desligamento automático";
+    return "🤖 *" . host() . "* — " . t('help_h') . ":\n"
+        . "*" . W('status') . "* – " . t('help_status') . "\n"
+        . "*" . W('reboot') . "* – " . t('help_reboot') . "\n"
+        . "*" . W('off') . "* – " . t('help_off') . "\n"
+        . "*" . W('cancel') . " <" . t('code') . ">* – " . t('help_cancel') . "\n"
+        . "*" . W('lang') . " PT / ES / EN* – " . t('help_lang');
 }
 
 function norm_text(string $s): string
@@ -263,7 +395,7 @@ final class Guard
         $c = conf();
         for ($i = 0; $i < 60 && !whatsapp_ready(); $i++) sleep(3);
         $up = (int)(float)@file_get_contents('/proc/uptime');
-        foreach ($c['nums'] as $n) send($n, "✅ *" . host() . "* ligado de novo (reiniciou há " . fmt_dur($up) . ").");
+        foreach ($c['nums'] as $n) send($n, t('back', ['h' => host(), 'd' => fmt_dur($up)]));
     }
 
     private function newCode(int $minutes): string
@@ -320,14 +452,12 @@ final class Guard
                 $this->lastAlert = $now;
                 $this->warnSince ??= $now;
                 logm("Temperatura crítica: $tt — desligamento automático agendado");
-                if ($this->critMsgOk($c, $now)) $this->broadcast($c, "🛑 *" . host() . "* chegou a *$tt*!\n\n"
-                    . "Vou *DESLIGAR* em {$c['CRIT_MIN']} min para proteger o notebook, se não baixar.\n"
-                    . "Responda *CANCELAR $code* para impedir, ou *DESLIGAR $code* para desligar agora.");
+                if ($this->critMsgOk($c, $now)) $this->broadcast($c, t('crit', ['h' => host(), 't' => $tt, 'm' => $c['CRIT_MIN'], 'c' => $code]));
             }
         } elseif ($this->autoOffAt !== null && $t <= $c['CRIT_TEMP'] - 3) {
             $this->autoOffAt = null;
             logm("Temperatura baixou: $tt — desligamento automático cancelado");
-            if ($this->critNotified) { $this->critNotified = false; $this->broadcast($c, "👍 *" . host() . "*: temperatura baixou para *$tt*. Desligamento automático cancelado."); }
+            if ($this->critNotified) { $this->critNotified = false; $this->broadcast($c, t('crit_ok', ['h' => host(), 't' => $tt])); }
         }
 
         // aviso
@@ -339,16 +469,14 @@ final class Guard
                 $this->alerted = true;
                 $this->lastAlert = $now;
                 logm("Aviso de temperatura: $tt");
-                $this->broadcast($c, "🔥 *" . host() . "* está em *$tt* (limite {$c['WARN_TEMP']} °C).\n\n"
-                    . "Responda com:\n*REINICIAR $code* – reinicia o servidor\n*DESLIGAR $code* – desliga o servidor\n*STATUS* – mostra como ele está\n\n"
-                    . "O código vale 30 min.");
+                $this->broadcast($c, t('warn', ['h' => host(), 't' => $tt, 'l' => $c['WARN_TEMP'], 'c' => $code]));
             }
         } elseif ($t <= $c['WARN_TEMP'] - 5) {
             $this->warnSince = null;
             if ($this->alerted) {
                 $this->alerted = false;
                 logm("Temperatura normal: $tt");
-                $this->broadcast($c, "✅ *" . host() . "*: temperatura voltou ao normal (*$tt*).");
+                $this->broadcast($c, t('normal', ['h' => host(), 't' => $tt]));
             }
         }
     }
@@ -359,7 +487,7 @@ final class Guard
         $this->noAutoOffUntil = time() + 600;     // se o poweroff falhar, não repete antes de 10 min
         $tt = $this->temp !== null ? round($this->temp) . ' °C' : '?';
         logm("Desligando por temperatura ($tt)");
-        $this->broadcast($c, "⏻ *" . host() . "* continua em *$tt*: desligando agora para proteger o notebook.\nPara ligar de novo, use o botão de energia.");
+        $this->broadcast($c, t('autooff', ['h' => host(), 't' => $tt]));
         $this->power(false);
     }
 
@@ -412,32 +540,42 @@ final class Guard
         $parts = explode(' ', $n);
         $w = $parts[0] ?? '';
         $arg = $parts[1] ?? '';
-        if ($raw === '?' || in_array($w, ['ajuda', 'menu', 'comandos', 'help'], true)) {
+        if (in_array($w, ['idioma', 'language', 'lang', 'lingua', 'linguagem'], true)) {
+            $code = lang_code(implode(' ', array_slice($parts, 1)));
+            if ($code === '') { send($from, t('lang_ask')); return; }
+            if (!set_lang($code)) { logm('Não consegui gravar LANG em ' . CONF); return; }
+            logm("Idioma do bot: $code (pedido de +$from)");
+            usleep(10000);
+            $GLOBALS['__lk_lang_force'] = $code;
+            send($from, t('lang_ok') . "\n\n" . help_text());
+            return;
+        }
+        if ($raw === '?' || in_array($w, ['ajuda', 'ayuda', 'menu', 'comandos', 'help', 'commands'], true)) {
             send($from, help_text());
             return;
         }
-        if (in_array($w, ['status', 'temp', 'temperatura', 'info'], true)) {
+        if (in_array($w, ['status', 'temp', 'temperatura', 'temperature', 'info', 'estado'], true)) {
             send($from, status_text());
             return;
         }
-        if (in_array($w, ['reiniciar', 'reboot', 'reinicia'], true)) {
+        if (in_array($w, ['reiniciar', 'reboot', 'reinicia', 'restart', 'reinicio'], true)) {
             $this->power_cmd($c, $from, true, $arg);
             return;
         }
-        if (in_array($w, ['desligar', 'desliga', 'poweroff', 'shutdown'], true)) {
+        if (in_array($w, ['desligar', 'desliga', 'poweroff', 'shutdown', 'apagar', 'apaga', 'off'], true)) {
             $this->power_cmd($c, $from, false, $arg);
             return;
         }
-        if ($w === 'cancelar') {
+        if (in_array($w, ['cancelar', 'cancel', 'cancela'], true)) {
             if ($this->autoOffAt === null) {
-                send($from, "Não há desligamento automático agendado.");
+                send($from, t('no_auto'));
             } elseif (!$this->codeOk($arg)) {
-                send($from, "Código inválido. Responda *CANCELAR* seguido do código do último aviso.");
+                send($from, t('bad_cancel'));
             } else {
                 $this->autoOffAt = null;
                 $this->noAutoOffUntil = time() + 1800;
                 logm("Desligamento automático cancelado por +$from");
-                $this->broadcast($c, "🟡 Desligamento automático de *" . host() . "* cancelado por +$from. Volto a vigiar em 30 min.");
+                $this->broadcast($c, t('cancelled', ['h' => host(), 'f' => $from]));
             }
             return;
         }
@@ -446,24 +584,22 @@ final class Guard
 
     private function power_cmd(array $c, string $from, bool $reboot, string $arg): void
     {
-        $word = $reboot ? 'REINICIAR' : 'DESLIGAR';
+        $word = $reboot ? W('reboot') : W('off');
         if ($arg === '') {
             $code = $this->newCode(5);
-            send($from, "Para confirmar, responda:\n*$word $code*\n\n" . ($reboot
-                    ? "O servidor e os sites ficam fora do ar por cerca de 1 minuto."
-                    : "⚠️ Para ligar de novo, só pelo botão de energia do notebook.") . "\nO código vale 5 min.");
+            send($from, t('confirm', ['w' => $word, 'c' => $code, 'x' => t($reboot ? 'confirm_reboot' : 'confirm_off')]));
             return;
         }
         if (!$this->codeOk($arg)) {
-            send($from, "Código inválido ou vencido. Mande *$word* para receber um novo.");
+            send($from, t('bad_code', ['w' => $word]));
             return;
         }
         $this->code = null;
         $this->autoOffAt = null;
         logm(($reboot ? 'Reiniciando' : 'Desligando') . " a pedido de +$from");
         $this->broadcast($c, $reboot
-            ? "🔄 Reiniciando *" . host() . "* a pedido de +$from. Aviso quando ele voltar."
-            : "⏻ Desligando *" . host() . "* a pedido de +$from. Para ligar de novo, use o botão de energia.");
+            ? t('rebooting', ['h' => host(), 'f' => $from])
+            : t('off_now', ['h' => host(), 'f' => $from]));
         $this->power($reboot);
     }
 }
@@ -480,7 +616,7 @@ if (in_array($argv[1] ?? '', ['teste', '--test'], true)) {
         exit(1);
     }
     $ok = true;
-    foreach ($c['nums'] as $n) $ok = send($n, "✅ Guardião de *" . host() . "* funcionando.\n\n" . help_text()) && $ok;
+    foreach ($c['nums'] as $n) $ok = send($n, t('test', ['h' => host()]) . "\n\n" . help_text()) && $ok;
     echo $ok ? "Mensagem de teste enviada para: " . implode(', ', $c['nums']) . "\n" : "Falha ao enviar (veja acima)\n";
     exit($ok ? 0 : 1);
 }

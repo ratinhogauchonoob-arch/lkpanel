@@ -7,6 +7,22 @@ cat > "$SHARE/install-whatsapp.sh" <<'LK_WHATSAPP_INSTALLER_EOF'
 LK_WHATSAPP_INSTALLER_EOF
 chmod 755 "$SHARE/install-whatsapp.sh"
 
+# LK-BOT-I18N (2.4.1): bot do WhatsApp já instalado? atualiza o guard.php (a config e os números ficam).
+# Quem já usava o bot continua em português (LANG=pt); instalação nova começa em inglês (LANG=en).
+if [[ -f /opt/lk-guard/guard.php ]] && command -v php >/dev/null 2>&1; then
+  lkg_tmp=$(mktemp)
+  awk 'f&&$0=="LK_GUARD_EOF"{f=0} f{print} $0=="cat > /opt/lk-guard/guard.php <<\047LK_GUARD_EOF\047"{f=1}' "$SHARE/install-whatsapp.sh" > "$lkg_tmp"
+  if [[ -s $lkg_tmp ]] && php -l "$lkg_tmp" >/dev/null 2>&1 && ! cmp -s "$lkg_tmp" /opt/lk-guard/guard.php; then
+    install -m 644 -o root -g root "$lkg_tmp" /opt/lk-guard/guard.php
+    if [[ -f /etc/lk-guard.conf ]] && ! grep -q '^LANG=' /etc/lk-guard.conf; then
+      printf '# Idioma do bot: en, pt ou es (WhatsApp: IDIOMA PT / LANGUAGE EN / IDIOMA ES · lk bot idioma pt)\nLANG=pt\n' >> /etc/lk-guard.conf
+    fi
+    systemctl restart lk-guard >/dev/null 2>&1 || true
+    echo "${G}[ok]${N} Bot do WhatsApp atualizado: agora fala português, inglês e espanhol (mande IDIOMA ES / LANGUAGE EN no WhatsApp)"
+  fi
+  rm -f "$lkg_tmp"
+fi
+
 echo "${C}[..]${N} Instalando dependências básicas (curl, ipset, iptables)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null 2>&1 || echo "  aviso: apt-get update falhou, seguindo assim mesmo"

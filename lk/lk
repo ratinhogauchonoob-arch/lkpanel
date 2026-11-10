@@ -5,7 +5,7 @@
 #        lk help     -> comandos diretos
 # =====================================================================
 
-LK_VERSION="2.4.0"
+LK_VERSION="2.4.1"
 LKM_INSTALLER="/usr/local/share/lk/install-lk-monitor.sh"
 LKM_SITE="/etc/apache2/sites-available/lkmonitor.conf"
 LK_DIR="/etc/lk"
@@ -1554,6 +1554,19 @@ bot_status() {
   else warn "Bot do WhatsApp: DESLIGADO (mudo; o desligamento automático por temperatura continua)"; fi
   info "Serviço lk-guard: $(systemctl is-active lk-guard 2>/dev/null) · WhatsApp (gowa): $(systemctl is-active gowa 2>/dev/null)"
   info "Números: $(grep -m1 '^NUMBERS=' "$LKG_CONF" | cut -d= -f2 | sed 's/^$/nenhum (sudo lk whatsapp guardiao)/')"
+  info "Idioma do bot: $(bot_lang_get) (pt, en ou es · no WhatsApp: IDIOMA PT / LANGUAGE EN / IDIOMA ES)"
+}
+# LK-BOT-I18N (2.4.1): idioma das mensagens do bot (LANG em /etc/lk-guard.conf, padrão en)
+bot_lang_get() { local l; l=$(grep -m1 '^LANG=' "$LKG_CONF" 2>/dev/null | cut -d= -f2 | tr -d "\"' "); echo "${l:-en}"; }
+bot_lang_set() {
+  [[ -f $LKG_CONF ]] || { err "Bot do WhatsApp não instalado: painel › App Store › WhatsApp + Bot"; return 1; }
+  local l; l=$(tr 'A-Z' 'a-z' <<< "${1:-}")
+  case "$l" in pt|br|portugues|português) l=pt;; en|us|english|ingles|inglês) l=en;; es|pa|espanol|español) l=es;;
+    *) err "Idioma inválido: use pt, en ou es"; return 1;; esac
+  if grep -q '^LANG=' "$LKG_CONF"; then sed -i "s/^LANG=.*/LANG=$l/" "$LKG_CONF"
+  else printf '# Idioma do bot: en, pt ou es (WhatsApp: IDIOMA PT / LANGUAGE EN / IDIOMA ES)\nLANG=%s\n' "$l" >> "$LKG_CONF"; fi
+  log "Bot WhatsApp: LANG=$l"
+  ok "Idioma do bot: $l (vale na próxima mensagem)"
 }
 bot_set() {
   [[ -f $LKG_CONF ]] || { err "Bot do WhatsApp não instalado: painel › App Store › WhatsApp + Bot"; return 1; }
@@ -1572,7 +1585,8 @@ bot_menu() {
   echo "  (1) Ligar bot                        (2) Desligar bot (para de mandar mensagens)"
   echo "  (3) Números que recebem os avisos    (4) Endereço da página / dados"
   echo "  (5) Trocar senha da página           (6) Atualizar o WhatsApp"
-  echo "  (7) Mandar mensagem de teste         (0) Voltar"
+  echo "  (7) Mandar mensagem de teste         (8) Idioma do bot (pt / en / es)"
+  echo "  (0) Voltar"
   case "$(ask "Opção" 0)" in
     1) bot_set 1;;
     2) bot_set 0;;
@@ -1581,6 +1595,7 @@ bot_menu() {
     5) wa_run senha;;
     6) wa_run;;
     7) php /opt/lk-guard/guard.php teste;;
+    8) bot_lang_set "$(ask "Idioma (pt, en ou es)" "$(bot_lang_get)")";;
     *) return 0;;
   esac
 }
@@ -1712,6 +1727,7 @@ ${W}LK Hosting CLI v$LK_VERSION${N}
                              modo servidor (sem área de trabalho, tela apagada)
   lk tela [off|on]           apagar / acender a tela agora
   lk bot [on|off|teste]      liga / desliga o bot do WhatsApp (Guardião LK)
+  lk bot idioma pt|en|es     idioma das mensagens do bot (padrão: en)
   lk ip-fixo [on|IP|off|status] IP fixo na rede de casa (on = .200; se ocupado, .201, .202...)
   lk apache-443 [off|status]  Apache e Tailscale Funnel juntos na porta 443 (automático com o Tailscale)
   lk whatsapp [instalar|info|guardiao|senha|remover]
@@ -1778,7 +1794,7 @@ cli() {
         *) LK_CLI=""; server_mode_menu;;
       esac;;
     bot)
-      case "${2:-status}" in on|ligar) bot_set 1;; off|desligar) bot_set 0;; teste|test) php /opt/lk-guard/guard.php teste;; *) bot_status;; esac;;
+      case "${2:-status}" in on|ligar) bot_set 1;; off|desligar) bot_set 0;; teste|test) php /opt/lk-guard/guard.php teste;; idioma|lang|language) bot_lang_set "${3:-}";; *) bot_status;; esac;;
     proxy-https) apache_proxy_https && ok "Sites atrás do Tailscale Funnel / Cloudflare Tunnel: PHP recebe HTTPS=on";;
     ip-fixo|ipfixo)
       case "${2:-}" in on|ligar) ipfix_on;; off|desligar|dhcp) ipfix_off;; status) ipfix_status;; "") LK_CLI=""; ipfix_menu;; *) ipfix_on "$2";; esac;;

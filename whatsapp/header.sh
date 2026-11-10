@@ -96,8 +96,8 @@ configure_guard() {
   else read -rp "Seu número do WhatsApp (ex.: 50761234567; vários separados por vírgula)${cur:+ [$cur]}: " nums; fi
   nums=${nums:-$cur}
   nums=$(tr -cd '0-9,' <<< "$nums" | sed -E 's/,+/,/g; s/^,//; s/,$//')
-  local wt wm rp ct cm ao bot
-  bot=$(gconf_get BOT)
+  local wt wm rp ct cm ao bot lg
+  bot=$(gconf_get BOT); lg=$(gconf_get LANG)
   wt=$(gconf_get WARN_TEMP); wm=$(gconf_get WARN_MIN); rp=$(gconf_get REPEAT_MIN)
   ct=$(gconf_get CRIT_TEMP); cm=$(gconf_get CRIT_MIN); ao=$(gconf_get AUTO_OFF)
   cat > "$GCONF" <<EOF
@@ -115,6 +115,8 @@ CRIT_MIN=${cm:-2}
 AUTO_OFF=${ao:-1}
 # Bot do WhatsApp: 1 = manda avisos e responde comandos, 0 = mudo (lk bot on|off)
 BOT=${bot:-1}
+# Idioma do bot: en, pt ou es (WhatsApp: IDIOMA PT / LANGUAGE EN / IDIOMA ES · lk bot idioma pt)
+LANG=${lg:-${WA_LANG:-en}}
 EOF
   chmod 600 "$GCONF"
   if [[ -n $nums ]]; then ok "Guardião configurado para: $nums"

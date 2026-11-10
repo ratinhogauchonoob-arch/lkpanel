@@ -83,3 +83,9 @@
 - `www/i18n.js`: o painel continua escrito em português; o i18n.js traduz na hora (dicionário de frases exatas PT→EN/ES + padrões regex para textos com números) os nós de texto e os atributos placeholder/title/aria-label, com MutationObserver para o que aparece depois. Não mexe em terminal, editor, pre/code, textarea nem [data-noi18n].
 - Idioma: localStorage + cookie `lkm_lang` (pt|en|es). `LKI18N.set(l)` recarrega; `LKI18N.picker(el)` desenha PT · EN · ES (tela de login/senha nova: `#lkLang`; Config: card "Idioma do painel", `#cfLang`). `LKI18N.t(s)` traduz uma string no JS.
 - Texto novo na interface: acrescente a frase exata no dicionário (DICT no topo do i18n.js), nos dois idiomas.
+
+## Bot do WhatsApp em 3 idiomas (2.4.1)
+- guard.php (marcador LK-BOT-I18N): `LANG=en|pt|es` em /etc/lk-guard.conf (padrão en). `t(chave, vars)` traz todas as mensagens nos 3 idiomas; `W()` dá as palavras dos comandos no idioma (pt REINICIAR/DESLIGAR/CANCELAR/AJUDA/IDIOMA, en RESTART/SHUTDOWN/CANCEL/HELP/LANGUAGE, es REINICIAR/APAGAR/CANCELAR/AYUDA/IDIOMA). Os comandos são aceitos nos 3 idiomas sempre.
+- Trocar: no WhatsApp `IDIOMA PT|ES|EN` / `LANGUAGE …` (grava LANG no conf com `set_lang`), `lk bot idioma pt|en|es`, ou `sudo lk` › 37 › 8. configure_guard (whatsapp/header.sh) mantém o LANG ao regravar o conf (`WA_LANG` para instalação sem perguntas).
+- Update: o footer do install-lk.sh/atualizar-lk.sh extrai o guard.php novo do install-whatsapp.sh e troca /opt/lk-guard/guard.php se mudou (php -l antes), reinicia lk-guard; instalação antiga sem LANG ganha LANG=pt (continua em português).
+- Mensagem nova do bot: acrescente a chave nos 3 idiomas no `t()`.
