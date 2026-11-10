@@ -21,7 +21,7 @@ Também traz o comando `lk`, um menu completo no terminal.
 No servidor, como root (ou com `sudo`):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ratinhogauchonoob-arch/lkpanel/main/install.sh -o install.sh && sudo bash install.sh
+curl -fsSL https://github.com/ratinhogauchonoob-arch/lkpanel/releases/latest/download/install.sh -o install.sh && sudo bash install.sh
 ```
 
 1. Aperte **Enter** em "Instalar o painel agora?". Ele instala sozinho, sem fazer perguntas: Apache, PHP, MariaDB, SSH e o painel.
@@ -29,6 +29,8 @@ curl -fsSL https://raw.githubusercontent.com/ratinhogauchonoob-arch/lkpanel/main
 3. No 1º login, o painel pede uma senha nova. Ela pode valer também para o root do Linux, com o SSH do root ligado.
 
 Depois disso, o menu no terminal é o `sudo lk`. Para deixar o servidor num IP fixo (ex.: `192.168.0.200`): `sudo lk ip-fixo on`.
+
+O comando sempre baixa o instalador do [Release mais recente do GitHub](https://github.com/ratinhogauchonoob-arch/lkpanel/releases/latest).
 
 ### Atualizar
 Rode o `install.sh` novo. Ele detecta o painel instalado e só atualiza, mantendo porta, senha, sites, bancos e dados.
