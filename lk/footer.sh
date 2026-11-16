@@ -59,8 +59,10 @@ if [[ -d /usr/share/lk-phpmyadmin ]] && find /usr/share/lk-phpmyadmin -type d ! 
 fi
 
 # Tailscale instalado: o Apache não pode pedir a 443 em todos os IPs (o Funnel usa a 443 no IP do Tailscale)
-if command -v tailscale >/dev/null && command -v apache2ctl >/dev/null && ! grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf; then
-  echo "${C}[..]${N} Ajustando o Apache para dividir a porta 443 com o Tailscale..."
+# 2.4.2: também a porta HTTPS do painel (8443) e o ReadWritePaths do Ubuntu 26.04: refaz se o script for o antigo
+if command -v tailscale >/dev/null && command -v apache2ctl >/dev/null \
+   && { ! grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf || ! grep -qs 'LK-A443-V2' /usr/local/sbin/lk-apache-listen; }; then
+  echo "${C}[..]${N} Ajustando o Apache para dividir as portas 443 e 8443 com o Tailscale..."
   /usr/bin/lk apache-443 || echo "  aviso: não deu para ajustar agora (depois: sudo lk apache-443)"
 fi
 

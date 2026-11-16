@@ -633,7 +633,8 @@ info "Configurando Apache na porta $PORT$([[ $HTTPS_ON == 1 ]] && echo " e HTTPS
   vhost_body lkmonitor
   echo "</VirtualHost>"
   if [[ $HTTPS_ON == 1 ]]; then
-    echo "Listen $HTTPS_PORT https"
+    # 2.4.2: com "lk apache-443" ligado (Tailscale), a porta HTTPS vai no lk-listen-443.conf, fora do IP do Tailscale
+    { grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf && grep -qs 'LK-A443-V2' /usr/local/sbin/lk-apache-listen; } || echo "Listen $HTTPS_PORT https"
     echo "<VirtualHost *:$HTTPS_PORT>"
     vhost_body "$(hostname -s | tr 'A-Z' 'a-z')"
     echo "    SSLEngine on"
@@ -644,6 +645,7 @@ info "Configurando Apache na porta $PORT$([[ $HTTPS_ON == 1 ]] && echo " e HTTPS
 } > "$SITE"
 a2enmod proxy proxy_fcgi proxy_wstunnel setenvif mime >/dev/null 2>&1
 a2ensite lkmonitor >/dev/null
+[[ -x /usr/local/sbin/lk-apache-listen ]] && grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf && /usr/local/sbin/lk-apache-listen
 if ! apache2ctl configtest >/dev/null 2>&1; then
   apache2ctl configtest
   if [[ -f $SITE.lkm-bak ]]; then
@@ -655,7 +657,12 @@ if ! apache2ctl configtest >/dev/null 2>&1; then
   die "Configuração do Apache com erro. Painel não ativado."
 fi
 rm -f "$SITE.lkm-bak"
-systemctl reload apache2 || systemctl restart apache2
+if systemctl is-active --quiet apache2; then
+  # porta HTTPS nova ou endereços novos precisam de restart (reload não troca os Listen de uma vez)
+  if [[ ${OLDHTTPS:-} != "${HTTPS_PORT:-}" || ${OLDPORT:-} != "$PORT" ]]; then systemctl restart apache2; else systemctl reload apache2 || systemctl restart apache2; fi
+else
+  systemctl restart apache2
+fi
 
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow "$PORT/tcp" >/dev/null && info "Porta $PORT liberada no UFW"

@@ -35,7 +35,7 @@ cat > "$TMP" <<'LK_SCRIPT_EOF'
 #        lk help     -> comandos diretos
 # =====================================================================
 
-LK_VERSION="2.4.1"
+LK_VERSION="2.4.2"
 LKM_INSTALLER="/usr/local/share/lk/install-lk-monitor.sh"
 LKM_SITE="/etc/apache2/sites-available/lkmonitor.conf"
 LK_DIR="/etc/lk"
@@ -1108,7 +1108,12 @@ lkm_job() { # backups usam o executor de tarefas do LK Monitor
   [[ -f $LKM_JOB ]] || { err "Backups precisam do LK Monitor instalado (sudo lk -> opção 33)."; return 1; }
   "$(lkm_php)" -d memory_limit=512M "$LKM_JOB" "$@"
 }
-lkm_https_port() { [[ -f $LKM_SITE ]] && grep -m1 -oE '^Listen [0-9]+ https' "$LKM_SITE" | awk '{print $2}'; }
+lkm_https_port() {
+  [[ -f $LKM_SITE ]] || return 0
+  local p; p=$(grep -m1 -oE '^Listen [0-9]+ https' "$LKM_SITE" | awk '{print $2}')
+  [[ -z $p ]] && p=$(grep -oP "define\('LKM_HTTPS_PORT', '\K[0-9]+" /var/www/lkmonitor/config.php 2>/dev/null)
+  [[ -n $p && $p != 0 ]] && echo "$p"; return 0
+}
 
 lkm_urls() {
   local port sport ip; port=$(lkm_port); sport=$(lkm_https_port)
@@ -1131,7 +1136,11 @@ monitor_menu() {
   title "LK Monitor (painel web: uso, histórico, sites, arquivos e terminal completo)"
   local port; port=$(lkm_port)
   if [[ -n $port ]]; then
-    echo "  Status: ${G}instalado${N} na porta $port$([[ -n $(lkm_https_port) ]] && echo " (HTTPS na $(lkm_https_port))")"
+    if systemctl is-active --quiet "$(apache_svc)" && ss -tln 2>/dev/null | grep -qE "[:.]$port\s"; then
+      echo "  Status: ${G}rodando${N} na porta $port$([[ -n $(lkm_https_port) ]] && echo " (HTTPS na $(lkm_https_port))")"
+    else
+      echo "  Status: ${R}PARADO${N} (Apache fora do ar ou porta $port fechada; use a opção 4 para reiniciar)"
+    fi
     if systemctl is-active --quiet lkmonitor-collect.timer 2>/dev/null; then echo "  Histórico: ${G}coletando${N} a cada minuto (7 dias)"
     else echo "  Histórico: ${Y}parado${N} (use a opção 1 para atualizar)"; fi
     if systemctl is-active --quiet lkmonitor-term 2>/dev/null; then echo "  Terminal:  ${G}completo${N} (nano, htop, o menu do lk...)"
@@ -1153,7 +1162,10 @@ monitor_menu() {
     4) [[ -n $port ]] || { warn "Painel não instalado"; return 1; }
        local s; for s in $(fpm_services); do systemctl restart "$s"; done
        systemctl restart lkmonitor-collect.timer 2>/dev/null
-       apache_reload && ok "Painel reiniciado"
+       # 2.4.2: reload só funciona com o Apache rodando; parado, precisa de restart
+       if systemctl is-active --quiet "$(apache_svc)"; then apache_reload && ok "Painel reiniciado"
+       elif apache_test >/dev/null 2>&1 && systemctl restart "$(apache_svc)"; then ok "Apache estava parado: iniciado de novo"
+       else err "O Apache não subiu. Veja: journalctl -u $(apache_svc) -n 20 --no-pager"; fi
        if [[ -f /etc/systemd/system/lkmonitor-term.service ]]; then
          if grep -q 'lkmonitor-term' /proc/$$/cgroup 2>/dev/null; then
            warn "Você está no terminal do painel: ele reinicia em 5 s e reconecta sozinho."
@@ -1396,24 +1408,40 @@ apache_443_fix() {
   if [[ ${1:-} != force ]] && ! has tailscale; then return 0; fi
   cat > "$A443_BIN" <<'LK_A443_EOF'
 #!/bin/bash
-# LK: gera /etc/apache2/lk-listen-443.conf com a porta 443 só nos IPs que NÃO são do Tailscale.
+# LK-A443-V2 (2.4.2): gera /etc/apache2/lk-listen-443.conf com a 443 e a porta HTTPS do painel (ex.: 8443)
+# só nos IPs que NÃO são do Tailscale (o tailscale serve/funnel também usa essas portas no IP 100.x).
 # Roda sozinho antes de cada início do Apache. Para desfazer: lk apache-443 off
 out=/etc/apache2/lk-listen-443.conf
-# sem o comando ip não dá para saber os IPs: volta ao normal (todos os IPs)
-command -v ip >/dev/null || { echo "Listen 443" > "$out"; exit 0; }
+site=/etc/apache2/sites-available/lkmonitor.conf
+# porta HTTPS do painel: só entra aqui se o lkmonitor.conf não tiver o próprio "Listen <porta>"
+hp=$(grep -oP "define\('LKM_HTTPS_PORT', '\K[0-9]+" /var/www/lkmonitor/config.php 2>/dev/null)
+if [[ ! $hp =~ ^[0-9]+$ || $hp == 0 || ! -e /etc/apache2/sites-enabled/lkmonitor.conf ]] \
+   || grep -qsE "^[[:space:]]*Listen[[:space:]]+([^[:space:]]+:)?$hp([[:space:]]|$)" "$site"; then hp=""; fi
+L() { echo "Listen $1:443"; [[ -n $hp ]] && echo "Listen $1:$hp https"; return 0; }
 {
   echo "# gerado por $0 a cada início do Apache - não edite"
-  echo "Listen 127.0.0.1:443"
-  ip -6 addr show dev lo 2>/dev/null | grep -q 'inet6 ::1/' && echo "Listen [::1]:443"
-  ip -o -4 addr show up 2>/dev/null | awk '$2 != "lo" && $2 !~ /^tailscale/ {split($4, a, "/"); print a[1]}' | sort -u | while read -r ip; do
-    IFS=. read -r a b _ _ <<< "$ip"
-    [[ $a == 100 ]] && ((b >= 64 && b <= 127)) && continue   # faixa do Tailscale (100.64.0.0/10)
-    echo "Listen $ip:443"
-  done
+  if ! command -v ip >/dev/null; then
+    # sem o comando ip não dá para saber os IPs: volta ao normal (todos os IPs)
+    echo "Listen 443"; [[ -n $hp ]] && echo "Listen $hp https"
+  else
+    L 127.0.0.1
+    ip -6 addr show dev lo 2>/dev/null | grep -q 'inet6 ::1/' && L "[::1]"
+    ip -o -4 addr show up 2>/dev/null | awk '$2 != "lo" && $2 !~ /^tailscale/ {split($4, a, "/"); print a[1]}' | sort -u | while read -r ip; do
+      IFS=. read -r a b _ _ <<< "$ip"
+      [[ $a == 100 ]] && ((b >= 64 && b <= 127)) && continue   # faixa do Tailscale (100.64.0.0/10)
+      L "$ip"
+    done
+  fi
 } > "$out.tmp" && mv -f "$out.tmp" "$out"
 exit 0
 LK_A443_EOF
   chmod 755 "$A443_BIN"
+  # 2.4.2: a porta HTTPS do painel (8443...) também sai do "todos os IPs" (o tailscale serve usa a 8443)
+  local hp; hp=$(lkm_https_port)
+  if [[ -n $hp && -f $LKM_SITE ]] && grep -qE "^\s*Listen\s+$hp\s+https\s*$" "$LKM_SITE"; then
+    cp -a "$LKM_SITE" "$LKM_SITE.lk-a443-bak"
+    sed -i -E "/^\s*Listen\s+$hp\s+https\s*$/d" "$LKM_SITE"
+  fi
   "$A443_BIN"
   if ! apache_443_on; then
     cp -a /etc/apache2/ports.conf /etc/apache2/ports.conf.lk-bak
@@ -1427,21 +1455,30 @@ Wants=network-online.target
 After=network-online.target tailscaled.service
 [Service]
 ExecStartPre=/usr/local/sbin/lk-apache-listen
+# Ubuntu 26.04: o apache2.service deixa o /etc só leitura e o ExecStartPre não conseguia gravar
+ReadWritePaths=/etc/apache2
 LK_A443_EOF
   systemctl daemon-reload
   if ! apache2ctl configtest >/dev/null 2>&1; then
     [[ -f /etc/apache2/ports.conf.lk-bak ]] && cp -a /etc/apache2/ports.conf.lk-bak /etc/apache2/ports.conf
+    [[ -f $LKM_SITE.lk-a443-bak ]] && mv -f "$LKM_SITE.lk-a443-bak" "$LKM_SITE"
     rm -f "$A443_DROP"; systemctl daemon-reload
     warn "Apache x Tailscale: a configuração ficou com erro e foi desfeita"; return 1
   fi
   # restart (não reload): troca o 0.0.0.0:443 pelos IPs certos; o painel cai por 1-2 segundos
-  if systemctl restart apache2; then ok "Apache e Tailscale dividem a porta 443 sem conflito ($(grep -c '^Listen' "$A443_CONF") endereço(s))"
+  rm -f "$LKM_SITE.lk-a443-bak"
+  if systemctl restart apache2; then ok "Apache e Tailscale dividem as portas 443$([[ -n $hp ]] && echo " e $hp") sem conflito ($(grep -c '^Listen' "$A443_CONF") linha(s) Listen)"
   else err "O Apache não subiu. Veja: journalctl -u apache2 -n 20 --no-pager  (desfazer: lk apache-443 off)"; return 1; fi
 }
 apache_443_off() {
   [[ -f /etc/apache2/ports.conf.lk-bak ]] && cp -a /etc/apache2/ports.conf.lk-bak /etc/apache2/ports.conf \
     || sed -i -E 's/^(\s*)Include\s+lk-listen-443\.conf\s*$/\1Listen 443/' /etc/apache2/ports.conf
   rm -f "$A443_DROP" "$A443_CONF"; systemctl daemon-reload
+  # devolve o "Listen <porta> https" do painel para o lkmonitor.conf
+  local hp; hp=$(lkm_https_port)
+  if [[ -n $hp && -f $LKM_SITE ]] && ! grep -qE "^\s*Listen\s+$hp(\s|$)" "$LKM_SITE"; then
+    sed -i -E "0,/^<VirtualHost \*:$hp>/s//Listen $hp https\n&/" "$LKM_SITE"
+  fi
   apache2ctl configtest >/dev/null 2>&1 && systemctl restart apache2 && ok "Apache voltou a escutar a 443 em todos os IPs (Listen 443)"
 }
 
@@ -2121,7 +2158,7 @@ defined('LKM_TERM_PORT') || define('LKM_TERM_PORT', '0');
 defined('LKM_USER') || define('LKM_USER', 'root');
 define('LKM_LIB', dirname(LKM_FM_HELPER));
 require LKM_LIB . '/lib.php';
-const LKM_VERSION = '2.4.1';
+const LKM_VERSION = '2.4.2';
 const LKM_LOCK_MAX = 5;     // senhas erradas seguidas no login...
 const LKM_LOCK_MIN = 15;    // ...dentro destes minutos = bloqueio do IP por este tempo
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';   // base32 do 2FA (const precisa vir antes do código que roda)
@@ -10655,7 +10692,7 @@ LKM_EOF_CFJS
 cat > "$DIR/sw.js" <<'LKM_EOF_SW'
 /* LK Monitor - service worker: guarda só a "casca" do app (HTML de reserva, CSS, JS e ícones).
    Respostas das rotas ?api, ?cmd, ?fm, ?hist, ?sites, ?term e da página logada nunca vão para o cache. */
-const VER = '2.4.1';
+const VER = '2.4.2';
 const CACHE = 'lkm-shell-' + VER;
 const SHELL = ['offline.html', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png',
   'fm.css?v=' + VER, 'app.css?v=' + VER, 'fm.js?v=' + VER, 'term.js?v=' + VER, 'sites.js?v=' + VER, 'db.js?v=' + VER, 'config.js?v=' + VER, 'sys.js?v=' + VER, 'apps.js?v=' + VER, 'cf.js?v=' + VER];
@@ -16731,7 +16768,8 @@ info "Configurando Apache na porta $PORT$([[ $HTTPS_ON == 1 ]] && echo " e HTTPS
   vhost_body lkmonitor
   echo "</VirtualHost>"
   if [[ $HTTPS_ON == 1 ]]; then
-    echo "Listen $HTTPS_PORT https"
+    # 2.4.2: com "lk apache-443" ligado (Tailscale), a porta HTTPS vai no lk-listen-443.conf, fora do IP do Tailscale
+    { grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf && grep -qs 'LK-A443-V2' /usr/local/sbin/lk-apache-listen; } || echo "Listen $HTTPS_PORT https"
     echo "<VirtualHost *:$HTTPS_PORT>"
     vhost_body "$(hostname -s | tr 'A-Z' 'a-z')"
     echo "    SSLEngine on"
@@ -16742,6 +16780,7 @@ info "Configurando Apache na porta $PORT$([[ $HTTPS_ON == 1 ]] && echo " e HTTPS
 } > "$SITE"
 a2enmod proxy proxy_fcgi proxy_wstunnel setenvif mime >/dev/null 2>&1
 a2ensite lkmonitor >/dev/null
+[[ -x /usr/local/sbin/lk-apache-listen ]] && grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf && /usr/local/sbin/lk-apache-listen
 if ! apache2ctl configtest >/dev/null 2>&1; then
   apache2ctl configtest
   if [[ -f $SITE.lkm-bak ]]; then
@@ -16753,7 +16792,12 @@ if ! apache2ctl configtest >/dev/null 2>&1; then
   die "Configuração do Apache com erro. Painel não ativado."
 fi
 rm -f "$SITE.lkm-bak"
-systemctl reload apache2 || systemctl restart apache2
+if systemctl is-active --quiet apache2; then
+  # porta HTTPS nova ou endereços novos precisam de restart (reload não troca os Listen de uma vez)
+  if [[ ${OLDHTTPS:-} != "${HTTPS_PORT:-}" || ${OLDPORT:-} != "$PORT" ]]; then systemctl restart apache2; else systemctl reload apache2 || systemctl restart apache2; fi
+else
+  systemctl restart apache2
+fi
 
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow "$PORT/tcp" >/dev/null && info "Porta $PORT liberada no UFW"
@@ -18917,8 +18961,10 @@ if [[ -d /usr/share/lk-phpmyadmin ]] && find /usr/share/lk-phpmyadmin -type d ! 
 fi
 
 # Tailscale instalado: o Apache não pode pedir a 443 em todos os IPs (o Funnel usa a 443 no IP do Tailscale)
-if command -v tailscale >/dev/null && command -v apache2ctl >/dev/null && ! grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf; then
-  echo "${C}[..]${N} Ajustando o Apache para dividir a porta 443 com o Tailscale..."
+# 2.4.2: também a porta HTTPS do painel (8443) e o ReadWritePaths do Ubuntu 26.04: refaz se o script for o antigo
+if command -v tailscale >/dev/null && command -v apache2ctl >/dev/null \
+   && { ! grep -qsE '^\s*Include\s+lk-listen-443\.conf' /etc/apache2/ports.conf || ! grep -qs 'LK-A443-V2' /usr/local/sbin/lk-apache-listen; }; then
+  echo "${C}[..]${N} Ajustando o Apache para dividir as portas 443 e 8443 com o Tailscale..."
   /usr/bin/lk apache-443 || echo "  aviso: não deu para ajustar agora (depois: sudo lk apache-443)"
 fi
 
