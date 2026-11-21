@@ -13,7 +13,7 @@ defined('LKM_TERM_PORT') || define('LKM_TERM_PORT', '0');
 defined('LKM_USER') || define('LKM_USER', 'root');
 define('LKM_LIB', dirname(LKM_FM_HELPER));
 require LKM_LIB . '/lib.php';
-const LKM_VERSION = '2.4.2';
+const LKM_VERSION = '2.5.0';
 const LKM_LOCK_MAX = 5;     // senhas erradas seguidas no login...
 const LKM_LOCK_MIN = 15;    // ...dentro destes minutos = bloqueio do IP por este tempo
 const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';   // base32 do 2FA (const precisa vir antes do código que roda)
@@ -635,7 +635,7 @@ function cf_endpoint(): void
         json_out(['ok' => false, 'error' => 'Sessão expirada. Recarregue a página.'], 403);
         return;
     }
-    if (!in_array($act, ['status', 'login', 'setup', 'route_add', 'route_del', 'toggle', 'quick_start', 'quick_stop', 'unblock'], true)) {
+    if (!in_array($act, ['status', 'login', 'setup', 'route_add', 'route_del', 'toggle', 'quick_start', 'quick_stop', 'unblock', 'ts_on', 'ts_off'], true)) {
         json_out(['ok' => false, 'error' => 'Ação inválida'], 400);
         return;
     }
@@ -657,6 +657,7 @@ function cf_endpoint(): void
         return;
     }
     $in['action'] = $act;
+    $in['via_ts'] = (bool)preg_match('/\.ts\.net$/i', (string)($_SERVER['HTTP_HOST'] ?? ''));
     if ($act !== 'status') lkm_log('[internet] ' . $act . (isset($in['host']) ? ' ' . $in['host'] : '') . (isset($in['target']['type']) ? ' -> ' . $in['target']['type'] . ' ' . ($in['target']['name'] ?? $in['target']['port'] ?? '') : ''));
     @set_time_limit(0);
     $r = helper_exec('cf.php', $in, 120);

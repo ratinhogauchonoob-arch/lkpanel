@@ -6,7 +6,7 @@
  * o painel cria um túnel só dele e guarda tudo em /etc/lk/cloudflared (fora das pastas padrão do cloudflared, para o
  * "teste rápido" continuar funcionando). Serviço: lk-cloudflared. Teste rápido (trycloudflare.com): unidade lk-cf-quick.
  *
- *   status | login | setup | route_add | route_del | toggle | quick_start | quick_stop
+ *   status | login | setup | route_add | route_del | toggle | quick_start | quick_stop | ts_on | ts_off
  */
 declare(strict_types=1);
 if (PHP_SAPI !== 'cli') {
@@ -243,7 +243,42 @@ function status(): array
         'routes' => array_map(fn($r) => ['host' => $r['host'], 'label' => $r['label'], 'service' => $r['service'], 'target' => $r['target']], jread('routes.json')),
         'quick' => ['active' => $qa === 'active' || $qa === 'activating', 'url' => quick_url(), 'label' => $Q['label'] ?? null],
         'sites' => apache_sites(), 'panel_port' => panel_port(),
+        'ts' => ts_status(),
     ];
+}
+
+
+/* ------------------------------------------------------------------ Tailscale Funnel (2.5.0) */
+/* Liga/desliga o Funnel da porta 443 (endereço https://<máquina>.<tailnet>.ts.net) apontando para uma porta local.
+   Só mexe na 443: o "tailscale serve" de outras portas (ex.: 8443) fica como está. */
+function ts_bin(): ?string
+{
+    foreach (['/usr/bin/tailscale', '/usr/local/bin/tailscale', '/usr/sbin/tailscale'] as $b) if (is_executable($b)) return $b;
+    return null;
+}
+
+function ts_status(): array
+{
+    $b = ts_bin();
+    if (!$b) return ['installed' => false];
+    [$c, $o] = run([$b, 'status', '--json'], 10);
+    $st = $c === 0 ? json_decode($o, true) : null;
+    $running = is_array($st) && ($st['BackendState'] ?? '') === 'Running';
+    $host = $running ? rtrim((string)($st['Self']['DNSName'] ?? ''), '.') : '';
+    $on = false; $target = null;
+    if ($running) {
+        [$c2, $f] = run([$b, 'funnel', 'status', '--json'], 10);
+        $fs = $c2 === 0 ? json_decode($f, true) : null;
+        if (is_array($fs)) {
+            foreach ((array)($fs['AllowFunnel'] ?? []) as $hp => $v) if ($v && str_ends_with((string)$hp, ':443')) $on = true;
+            foreach ((array)($fs['Web'] ?? []) as $hp => $w) {
+                if (!str_ends_with((string)$hp, ':443')) continue;
+                $px = (string)($w['Handlers']['/']['Proxy'] ?? '');
+                if ($px !== '') $target = $px;
+            }
+        }
+    }
+    return ['installed' => true, 'running' => $running, 'host' => $host, 'on' => $on, 'target' => $target];
 }
 
 /* ------------------------------------------------------------------ */
@@ -256,6 +291,28 @@ if ($act === 'status') out(status());
 need_root();
 
 switch ($act) {
+    case 'ts_on': {
+        $b = ts_bin() ?? fail('O Tailscale não está instalado. Instale pela App Store (Tailscale) e faça login.', ['nobin' => true]);
+        $ts = ts_status();
+        if (empty($ts['running'])) fail('O Tailscale não está conectado. No servidor rode: sudo tailscale up');
+        $port = (int)($req['port'] ?? 0) ?: panel_port();
+        if ($port < 1 || $port > 65535) fail('Porta inválida');
+        [$c, $o] = run([$b, 'funnel', '--bg', (string)$port], 25);
+        if (preg_match('#https://login\.tailscale\.com/\S+#', $o, $m)) fail('O Funnel ainda não está liberado na sua rede Tailscale. Abra o link, clique em liberar e tente de novo.', ['enable_url' => $m[0]]);
+        $ts = ts_status();
+        if (empty($ts['on'])) fail('O Tailscale não ligou o Funnel.' . ($o !== '' ? "\n\n" . mb_substr($o, 0, 600) : ''));
+        out(['msg' => 'Funnel ligado: https://' . $ts['host'] . '/', 'ts' => $ts]);
+    }
+    case 'ts_off': {
+        $b = ts_bin() ?? fail('O Tailscale não está instalado.');
+        $argv = [$b, 'funnel', '--https=443', 'off'];
+        // quem está usando o painel pelo próprio Funnel: responde antes e desliga 2 s depois
+        if (!empty($req['via_ts'])) { later($argv, 2); out(['msg' => 'O Funnel desliga em 2 segundos. Esta página vai cair: entre pela rede de casa.']); }
+        [$c, $o] = run($argv, 20);
+        $ts = ts_status();
+        if (!empty($ts['on'])) fail('Não consegui desligar o Funnel.' . ($o !== '' ? "\n\n" . mb_substr($o, 0, 600) : ''));
+        out(['msg' => 'Funnel desligado', 'ts' => $ts]);
+    }
     case 'login': {
         need_bin();
         if (is_file(CERT)) out(['done' => true]);

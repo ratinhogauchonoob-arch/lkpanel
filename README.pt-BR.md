@@ -6,7 +6,7 @@ Painel grátis, estilo aaPanel, para transformar um PC ou notebook velho num ser
 Tem sites, bancos de dados, arquivos, terminal no navegador, App Store, bot do WhatsApp e acesso de qualquer lugar.
 Também traz o comando `lk`, um menu completo no terminal.
 
-**Site:** [lkpanel.goodbits.tech](https://lkpanel.goodbits.tech/) · **Versão:** 2.4.2 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+**Site:** [lkpanel.goodbits.tech](https://lkpanel.goodbits.tech/) · **Versão:** 2.5.0 · **Sistemas:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
 > O painel tem **português**, inglês e espanhol (Config › Idioma do painel, ou os botões PT · EN · ES na tela de login).
 
@@ -87,6 +87,7 @@ cp dist/install-lk.sh install.sh # para publicar a versão nova
 
 | Versão | O que mudou |
 |---|---|
+| **2.5.0** | **Tailscale Funnel com botão Ligar/Desligar no painel** (aba Internet): o endereço público `https://<máquina>.ts.net` liga e desliga com um clique, com o link para copiar |
 | **2.4.2** | Correção: o Apache não cai mais depois de reiniciar quando o Tailscale usa a porta 8443 (`tailscale serve`): a porta HTTPS do painel agora escuta só fora do IP do Tailscale, como a 443. Funciona no Ubuntu 26.04 (/etc só leitura no início do Apache). Menu 33 mostra o status real do painel |
 | **2.4.1** | **Bot do WhatsApp em 3 idiomas** (inglês por padrão): mande `IDIOMA PT`, `IDIOMA ES` ou `LANGUAGE EN` no WhatsApp, ou `lk bot idioma pt`. Os comandos funcionam nos 3 idiomas |
 | **2.4.0** | **Painel em 3 idiomas: português, inglês e espanhol** (Config › Idioma do painel, ou PT · EN · ES na tela de login) |

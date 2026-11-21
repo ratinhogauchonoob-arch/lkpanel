@@ -6,7 +6,7 @@ A free, aaPanel-style control panel that turns an old PC or laptop into a real s
 It manages websites, databases, files and services, and gives you a web terminal, an app store, a WhatsApp bot and access from anywhere.
 It also ships the `lk` command, a full menu-driven tool for the terminal.
 
-**Website:** [lkpanel.goodbits.tech](https://lkpanel.goodbits.tech/) · **Version:** 2.4.2 · **Systems:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
+**Website:** [lkpanel.goodbits.tech](https://lkpanel.goodbits.tech/) · **Version:** 2.5.0 · **Systems:** Ubuntu 22.04 / 24.04 / 26.04 · Debian 12
 
 > The panel is available in **English**, Portuguese and Spanish (Settings › Panel language, or the PT · EN · ES buttons on the login page).
 
@@ -104,6 +104,7 @@ cp dist/install-lk.sh install.sh # to publish the new version
 
 | Version | Changes |
 |---|---|
+| **2.5.0** | **Tailscale Funnel on/off in the panel** (Internet tab): turn the public `https://<machine>.ts.net` address on or off with one click, see the link and copy it |
 | **2.4.2** | Fix: Apache no longer goes down after a reboot when Tailscale uses port 8443 (`tailscale serve`): the panel's HTTPS port now listens only outside the Tailscale IP, like port 443. Works on Ubuntu 26.04 (read-only /etc at Apache start). Menu 33 shows the real panel status |
 | **2.4.1** | **WhatsApp bot in 3 languages** (English by default): send `IDIOMA PT`, `IDIOMA ES` or `LANGUAGE EN` on WhatsApp, or `lk bot idioma pt`. Commands work in all 3 languages |
 | **2.4.0** | **Panel in 3 languages: Portuguese, English and Spanish** (Settings › Panel language, or PT · EN · ES on the login page) |

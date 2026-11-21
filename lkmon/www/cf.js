@@ -32,6 +32,7 @@
     root.innerHTML =
       '<div class="card"><div class="ct"><h2>Cloudflare Tunnel</h2><span id="cfSub">sites e painel na internet com HTTPS, sem abrir portas no roteador</span></div><div id="cfSteps"></div></div>' +
       '<div class="card" id="cfPubBox" hidden><div class="ct"><h2>Endereços publicados</h2><span id="cfPubN"></span></div><div id="cfForm"></div><div class="cf-tw"><table class="cf-t"><thead><tr><th>Endereço</th><th>Aponta para</th><th class="r">Ação</th></tr></thead><tbody id="cfRoutes"></tbody></table></div></div>' +
+      '<div class="card"><div class="ct"><h2>Tailscale Funnel</h2><span>o painel num endereço https fixo, de qualquer lugar</span></div><div id="tsBox"></div></div>' +
       '<div class="card"><div class="ct"><h2>Teste rápido</h2><span>sem domínio e sem conta · endereço temporário</span></div><div id="cfQuick"></div></div>' +
       '<div class="card"><div class="ct"><h2>Senha do painel</h2><span id="pwSub"></span></div><div id="pwBox"></div></div>' +
       '<div class="card"><div class="ct"><h2>Login com 2 fatores</h2><span>código do celular além da senha</span></div><div id="tfaBox"></div></div>' +
@@ -95,6 +96,24 @@
         '<td class="r cf-acts"><button class="lnk" data-a="copy" data-u="https://' + E(r.host) + '">Copiar</button><span class="ap-sep">|</span><button class="lnk red" data-a="del" data-h="' + E(r.host) + '"' + dis + '>Remover</button></td></tr>').join('')
         : '<tr><td colspan="3" class="ap-empty">Nada publicado ainda. Escolha acima o que colocar na internet.</td></tr>';
     }
+
+    /* Tailscale Funnel (2.5.0) */
+    const ts = d.ts || {}, viaTs = /\.ts\.net$/i.test(d.here || '');
+    let th;
+    if (!ts.installed) th = '<div class="empty">Instale o <b>Tailscale</b> pela App Store e faça login para usar o Funnel.</div>';
+    else if (!ts.running) th = '<div class="empty">O Tailscale está instalado, mas não está conectado. No servidor rode <code>sudo tailscale up</code>.</div>';
+    else if (ts.on) {
+      const url = 'https://' + ts.host + '/';
+      th = '<div class="cf-quick on"><span class="cf-on">●</span><div class="grow"><a href="' + E(url) + '" target="_blank" rel="noopener" class="cf-host">' + E(url) + '</a>' +
+        '<small>ligado · aponta para ' + E((ts.target || '').replace(/^https?:\/\//, '')) + '</small></div>' +
+        '<button class="abtn sm" data-a="copy" data-u="' + E(url) + '">Copiar</button><button class="abtn sm" data-a="tsoff"' + dis + '>Desligar</button></div>';
+      if (viaTs) th += '<div class="cf-tip">' + svg('info') + '<span>Você está acessando o painel <b>pelo Funnel</b>. Se desligar, a página cai: entre de novo pela rede de casa.</span></div>';
+    } else {
+      th = '<div class="cf-quick"><span class="cf-off">●</span><div class="grow"><b>Desligado</b><small>quando ligar: https://' + E(ts.host) + '/ → painel (porta ' + d.panel_port + ')</small></div>' +
+        '<button class="abtn sm pri" data-a="tson"' + dis + '>Ligar</button></div>';
+    }
+    const tk = JSON.stringify([ts, viaTs, rw()]);
+    if (S.tk !== tk) { S.tk = tk; qs('#tsBox').innerHTML = th + (ts.running ? '<div class="cf-note">Com o Funnel ligado, qualquer pessoa na internet chega na tela de login do painel: use uma senha forte e ligue o login com 2 fatores (mais abaixo).</div>' : ''); }
 
     /* teste rápido */
     const q = d.quick || {};
@@ -346,6 +365,22 @@
       b.disabled = true; b.textContent = 'Gerando…'; S.qk = '';
       try { await api('quick_start', { target: t }); } catch (er) { showErr('Não foi possível gerar o endereço', er); }
       return load();
+    }
+    if (a === 'tson') {
+      b.disabled = true; b.textContent = 'Ligando…'; S.tk = '';
+      try { const r = await api('ts_on'); toast(r.msg); }
+      catch (er) {
+        if (er.data && er.data.enable_url) await dialog({ title: 'Liberar o Funnel no Tailscale', icon: 'info', html: '<p>' + E(er.message) + '</p><p><a href="' + E(er.data.enable_url) + '" target="_blank" rel="noopener" class="cf-host">' + E(er.data.enable_url) + '</a></p>', buttons: [{ label: 'Fechar', value: null }] });
+        else showErr('Não foi possível ligar o Funnel', er);
+      }
+      return load();
+    }
+    if (a === 'tsoff') {
+      const k = await dialog({ title: 'Desligar o Funnel?', icon: 'power', html: '<p>O endereço <b>https://' + E((S.d.ts || {}).host || '') + '/</b> sai do ar. Pela rede de casa e pelo Tailscale o painel continua abrindo.</p>', buttons: [{ label: 'Cancelar', value: null }, { label: 'Desligar', value: true, kind: 'danger' }] });
+      if (!k) return;
+      S.tk = '';
+      try { const r = await api('ts_off'); toast(r.msg); } catch (er) { showErr('Não foi possível desligar o Funnel', er); }
+      return setTimeout(load, 2500);
     }
     if (a === 'qstop') { try { await api('quick_stop'); } catch (er) { } return load(); }
     if (a === 'unblock') { try { await api('unblock', { ip: b.dataset.ip }); toast('IP liberado'); } catch (er) { showErr('Falha', er); } return load(); }
